@@ -1,0 +1,584 @@
+#!/usr/bin/env python3
+
+import os
+import re
+import sys
+import shlex
+import logging
+import subprocess
+import tempfile
+import shutil
+from typing import Dict, List, Optional, Tuple, Any
+
+# Configure logging to stderr by default or a specific file if needed.
+# These can be overridden by environment variables.
+REPO_ROOT = os.environ.get("GIT_SHELL_REPO_ROOT", "/data/git").rstrip("/")
+# Default to /var/log/git/ssh.log because SSHD often strips env vars
+LOG_PATH = os.environ.get("GIT_SHELL_LOG_PATH", "/var/log/git/ssh.log")
+
+def setup_logging() -> None:
+    """Sets up logging configuration."""
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    logger.handlers = [] # Clear existing handlers
+
+    formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+
+    # Note: We do NOT add a StreamHandler here to avoid polluting the SSH session.
+    # We rely on 'entrypoint.sh' tailing the log file to stderr for Docker logs.
+    
+    # 1. Log to file if configured
+    if LOG_PATH and LOG_PATH.lower() != "stderr":
+        log_dir = os.path.dirname(LOG_PATH)
+        if log_dir and not os.path.exists(log_dir):
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+            except Exception as e:
+                 logging.error(f"Could not create log directory {log_dir}: {e}")
+                 return
+
+        try:
+            file_handler = logging.FileHandler(LOG_PATH)
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+        except Exception as e:
+             logging.error(f"Could not open log file {LOG_PATH}: {e}")
+
+def get_cert_info() -> Dict[str, Any]:
+    """
+    Retrieves and parses SSH certificate information from the SSH_USER_AUTH environment variable.
+    Returns a dictionary with 'key_id', 'serial', and 'principals'.
+    """
+    auth_info_path = os.environ.get("SSH_USER_AUTH")
+    if not auth_info_path:
+        logging.error("SSH_USER_AUTH environment variable is not set")
+        sys.exit(1)
+
+    if not os.path.exists(auth_info_path):
+        logging.error(f"Auth info file {auth_info_path} does not exist")
+        sys.exit(1)
+
+    try:
+        with open(auth_info_path, 'r') as f:
+            content = f.read().strip()
+    except IOError as e:
+        logging.error(f"Failed to read auth info: {e}")
+        sys.exit(1)
+
+    if content.startswith("publickey "):
+        content = content.replace("publickey ", "", 1)
+
+    # Use a secure temporary file
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', delete=True) as tf:
+            tf.write(content)
+            tf.flush()
+
+            logging.info("Checking certificate information")
+            try:
+                result = subprocess.run(
+                    ["ssh-keygen", "-L", "-f", tf.name],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+            except subprocess.CalledProcessError as e:
+                logging.error(f"ssh-keygen failed: {e}")
+                sys.exit(1)
+
+    except IOError as e:
+        logging.error(f"Temp file operation failed: {e}")
+        sys.exit(1)
+
+    lines = result.stdout.splitlines()
+    data: Dict[str, Any] = {"key_id": None, "serial": None, "principals": []}
+
+    collecting_principals = False
+    stop_headers = ["Critical Options:", "Extensions:", "Valid:"]
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        if line.startswith("Key ID:"):
+            # Format: "        Key ID: "user_id""
+            # After strip: "Key ID: "user_id""
+            parts = line.split(":", 1)
+            if len(parts) > 1:
+                data["key_id"] = parts[1].strip().replace('"', '')
+            continue
+
+        if line.startswith("Serial:"):
+            parts = line.split(":", 1)
+            if len(parts) > 1:
+                data["serial"] = parts[1].strip()
+            continue
+
+        if line.startswith("Principals:"):
+            collecting_principals = True
+            continue
+
+        if any(line.startswith(header) for header in stop_headers):
+            collecting_principals = False
+            continue
+
+        if collecting_principals:
+            if line and line != "(none)":
+                data["principals"].append(line)
+
+    return data
+
+def sanitize_git_command(command_str: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Parses and sanitizes the git command.
+    Returns a tuple (executable, repo_path).
+    """
+    if not command_str:
+        return None, None
+
+    try:
+        args = shlex.split(command_str)
+    except ValueError:
+        logging.error("Invalid shell formatting in command")
+        sys.exit(1)
+
+    if len(args) < 2:
+        return args[0], None
+
+    executable = args[0]
+    repo_path = args[1]
+
+    # 1. Whitelist the binary
+    allowed_binaries = ["git-upload-pack", "git-receive-pack", "git-upload-archive"]
+    if executable not in allowed_binaries:
+        logging.error(f"Forbidden binary attempted: {executable}")
+        sys.stderr.write(f"Forbidden: {executable} is not an allowed git service.\n")
+        sys.exit(1)
+
+    # 2. Sanitize the Repo Path
+    # Disallow absolute paths and directory traversal
+    if repo_path.startswith("/") or ".." in repo_path:
+        logging.error(f"Path traversal attempt: {repo_path}")
+        sys.stderr.write("Forbidden: Illegal path traversal.\n")
+        sys.exit(1)
+
+    # Only allow safe characters
+    if not re.match(r"^[a-zA-Z0-9\._\-/]+$", repo_path):
+        logging.error(f"Malicious characters in repo path: {repo_path}")
+        sys.stderr.write("Forbidden: Malicious characters in repository name.\n")
+        sys.exit(1)
+
+    return executable, repo_path
+
+def check_authorization(principals: List[str], repo_path: str, mode: str = "read") -> bool:
+    """
+    Checks if the user is authorized to access the repository.
+    Mode should be 'read' or 'write'.
+    """
+    if not repo_path:
+        return True
+
+    # 0. Admin always has access
+    if "admin" in principals:
+        return True
+
+    # Normalize path: remove .git suffix if present
+    clean_path = repo_path
+    if clean_path.endswith('.git'):
+        clean_path = clean_path[:-4]
+
+    parts = clean_path.split('/')
+
+    # Helper to check a specific scope
+    def check_scope(scope_prefix: str) -> bool:
+        # Check explicit Write scope
+        if f"write-{scope_prefix}" in principals:
+            return True
+        # If we only need Read access, check standard scope
+        if mode == "read" and scope_prefix in principals:
+            return True
+        return False
+
+    # 1. Personal Repo Scope: users/<username>/repo.git matches principal user-<username>
+    # Personal users have Read/Write access to their own repos (Owner Override)
+    if len(parts) >= 2 and parts[0] == "users":
+        username = parts[1]
+        owner_principal = f"user-{username}"
+        if owner_principal in principals:
+            return True
+        # If not owner, fall through to standard 'check_scope' logic below
+        # which will check for 'repo-users/username/repo' (Read) or 'write-repo-...' (Write)
+
+    # 2. Repo Scope
+    if check_scope(f"repo-{clean_path}"):
+        return True
+
+    # 3. Project Scope
+    if len(parts) >= 2:
+        if check_scope(f"project-{parts[0]}/{parts[1]}"):
+            return True
+
+    # 4. Org Scope
+    if len(parts) >= 1:
+        if check_scope(f"org-{parts[0]}"):
+            return True
+
+    return False
+
+def create_bare_repo(absolute_path: str) -> None:
+    """Creates a bare git repository at the specified path."""
+    try:
+        os.makedirs(absolute_path, exist_ok=True)
+        # Using git init --bare
+        subprocess.run(["git", "init", "--bare", absolute_path], check=True, capture_output=True)
+        print(f"\n[SUCCESS] Created repository at {absolute_path}")
+        logging.info(f"Created repository: {absolute_path}")
+    except Exception as e:
+        print(f"\n[ERROR] Failed to create repository: {e}")
+        logging.error(f"Failed to create repository at {absolute_path}: {e}")
+
+def list_repos(principals: List[str]) -> None:
+    """Lists repositories accessible to the user."""
+    print("\n--- Accessible Repositories ---")
+    
+    if not os.path.exists(REPO_ROOT):
+        print(f"No repositories found (Root {REPO_ROOT} does not exist).")
+        return
+
+    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+        # We are looking for directories that end in .git
+        # If we find one, we generally don't recurse into it
+        
+        # Modify dirnames in-place to prune recursion into .git directories
+        # But wait, os.walk(topdown=True) allows modifying dirnames
+        
+        git_dirs = [d for d in dirnames if d.endswith(".git")]
+        
+        for git_dir in git_dirs:
+            full_path = os.path.join(dirpath, git_dir)
+            
+            # Convert full_path to relative 'repo_path' for authorization check
+            # Logic: 
+            # /git/users/... -> users/...
+            # /git/orginizations/... -> ... (remove /git/orginizations/)
+            
+            # Handle variable REPO_ROOT safely
+            if full_path.startswith(REPO_ROOT):
+                 # Strip REPO_ROOT and leading slashes
+                 relative_internal = full_path[len(REPO_ROOT):].lstrip("/")
+            else:
+                 continue
+
+            rel_path = None
+            # logic: Users or Orginizations
+            if relative_internal.startswith("users/"):
+                rel_path = relative_internal # Already matches 'users/...'
+            elif relative_internal.startswith("orginizations/"):
+                # Strip 'orginizations/' for auth check
+                rel_path = relative_internal.replace("orginizations/", "", 1)
+            
+            if rel_path:
+                if check_authorization(principals, rel_path, mode="read"):
+                    print(f"- {rel_path}")
+                    found_any = True
+        
+        # Don't recurse into .git directories
+        dirnames[:] = [d for d in dirnames if not d.endswith(".git")]
+
+    if not found_any:
+        print("(No accessible repositories found)")
+
+def delete_repo(principals: List[str]) -> None:
+    """Deletes a repository if authorized."""
+    repo_name = get_input("Enter Repository Path to delete (e.g. users/me/repo.git): ")
+    if not repo_name:
+        return
+
+    # 1. Determine Absolute Path
+    # Reuse logical mapping from main/create logic
+    if repo_name.startswith("users/"):
+        abs_path = os.path.join(REPO_ROOT, repo_name)
+    else:
+        abs_path = os.path.join(REPO_ROOT, "orginizations", repo_name)
+    
+    # 2. Check Existence
+    if not os.path.exists(abs_path):
+        print(f"\n[ERROR] Repository does not exist: {abs_path}")
+        return
+    
+    # 3. Authorization (WRITE required)
+    if check_authorization(principals, repo_name, mode="write"):
+        confirm = get_input(f"Are you sure you want to PERMANENTLY DELETE {repo_name}? (yes/no): ")
+        if confirm.lower() == "yes":
+            try:
+                shutil.rmtree(abs_path)
+                print(f"\n[SUCCESS] Deleted {repo_name}")
+                logging.info(f"Deleted repository: {abs_path}")
+            except Exception as e:
+                print(f"\n[ERROR] Failed to delete: {e}")
+                logging.error(f"Failed to delete {abs_path}: {e}")
+        else:
+            print("Deletion cancelled.")
+    else:
+        print(f"\n[DENIED] You do not have permission to delete {repo_name}.")
+
+def view_readme(principals: List[str]) -> None:
+    """Displays the README.md from a specified repository and branch."""
+    repo_name = get_input("Enter Repository Path (e.g. users/me/repo.git): ")
+    if not repo_name:
+        return
+
+    # 1. Determine Absolute Path
+    if repo_name.startswith("users/"):
+        abs_path = os.path.join(REPO_ROOT, repo_name)
+    else:
+        abs_path = os.path.join(REPO_ROOT, "orginizations", repo_name)
+    
+    # 2. Check Existence
+    if not os.path.exists(abs_path):
+        print(f"\n[ERROR] Repository does not exist: {abs_path}")
+        return
+
+    # 3. Authorization (READ required)
+    if check_authorization(principals, repo_name, mode="read"):
+        branch = get_input("Enter Branch Name (default 'main'): ")
+        if not branch:
+            branch = "main"
+        
+        # Sanitize Branch
+        if not re.match(r"^[a-zA-Z0-9\._\-\/]+$", branch):
+            print("\n[ERROR] Invalid branch name.")
+            return
+
+        try:
+            # git --git-dir=... show branch:README.md
+            cmd = ["git", "--git-dir", abs_path, "show", f"{branch}:README.md"]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print(f"\n--- README.md ({repo_name} @ {branch}) ---")
+            print(result.stdout)
+            print("---------------------------------------------")
+        except subprocess.CalledProcessError:
+             print(f"\n[ERROR] Could not find README.md on branch '{branch}' (or branch does not exist).")
+    else:
+        print(f"\n[DENIED] You do not have permission to read {repo_name}.")
+
+def view_history(principals: List[str]) -> None:
+    """Displays the commit history from a specified repository and branch."""
+    repo_name = get_input("Enter Repository Path (e.g. users/me/repo.git): ")
+    if not repo_name:
+        return
+
+    # 1. Determine Absolute Path
+    if repo_name.startswith("users/"):
+        abs_path = os.path.join(REPO_ROOT, repo_name)
+    else:
+        abs_path = os.path.join(REPO_ROOT, "orginizations", repo_name)
+    
+    # 2. Check Existence
+    if not os.path.exists(abs_path):
+        print(f"\n[ERROR] Repository does not exist: {abs_path}")
+        return
+
+    # 3. Authorization (READ required)
+    if check_authorization(principals, repo_name, mode="read"):
+        branch = get_input("Enter Branch Name (default 'main'): ")
+        if not branch:
+            branch = "main"
+        
+        # Sanitize Branch
+        if not re.match(r"^[a-zA-Z0-9\._\-\/]+$", branch):
+            print("\n[ERROR] Invalid branch name.")
+            return
+
+        limit_str = get_input("Enter Number of Commits (default 10): ")
+        if not limit_str:
+            limit_str = "10"
+        
+        if not limit_str.isdigit():
+             print("\n[ERROR] Invalid limit. Must be a number.")
+             return
+        
+        try:
+            # git --git-dir=... log -n <limit> --pretty=format:"%h %s [Sig: %G? | %GS]" <branch>
+            # %h: short hash
+            # %s: subject
+            # %G?: signature status (G=Good, B=Bad, U=Unknown, N=None)
+            # %GS: name of signer
+            cmd = ["git", "--git-dir", abs_path, "log", "-n", limit_str, "--pretty=format:%h %s [Sig: %G? | %GS]", branch]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print(f"\n--- Commit History ({repo_name} @ {branch}) ---")
+            print(result.stdout)
+            print("\n---------------------------------------------")
+        except subprocess.CalledProcessError:
+             print(f"\n[ERROR] Could not retrieve history for branch '{branch}'.")
+    else:
+        print(f"\n[DENIED] You do not have permission to read {repo_name}.")
+
+def get_input(prompt: str) -> str:
+    """Safe input helper."""
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        return ""
+
+def interactive_menu(principals: List[str], key_id: str) -> None:
+    """
+    Provides an interactive menu for creating repositories.
+    """
+    print(f"Welcome to Git Shell, {key_id}!")
+    
+    while True:
+        print("\n--- Menu ---")
+        print("1. Create Personal Repository")
+        print("2. Create Organization/Project Repository")
+        print("3. List Accessible Repositories")
+        print("4. Delete Repository")
+        print("5. View Repository README")
+        print("6. View Commit History")
+        print("7. Exit")
+        choice = get_input("Select an option: ")
+
+        if choice == "1":
+            # Personal: users/<username>/<repo>.git
+            # 1. Determine Identity (Username)
+            allowed_users = [p.replace("user-", "") for p in principals if p.startswith("user-")]
+            
+            if not allowed_users:
+                 print("\n[DENIED] You do not have a 'user-*' principal.")
+                 continue
+            
+            target_user = allowed_users[0]
+            if len(allowed_users) > 1:
+                print(f"Available users: {', '.join(allowed_users)}")
+                inp = get_input(f"Enter username (default {target_user}): ")
+                if inp:
+                    if inp in allowed_users:
+                        target_user = inp
+                    else:
+                        print("\n[ERROR] Invalid user selection.")
+                        continue
+
+            repo_name = get_input("Enter Repository Name: ")
+            if not re.match(r"^[a-zA-Z0-9\._\-]+$", repo_name):
+                print("\n[ERROR] Invalid repository name (alphanumeric, dot, underscore, dash only).")
+                continue
+
+            rel_path = f"users/{target_user}/{repo_name}.git"
+            
+            # Authorization Check
+            if check_authorization(principals, rel_path, mode="write"):
+                abs_path = os.path.join(REPO_ROOT, rel_path)
+                create_bare_repo(abs_path)
+            else:
+                 print(f"\n[DENIED] You are not authorized to create {rel_path}.")
+
+        elif choice == "2":
+            # Org/Project
+            org_name = get_input("Enter Organization Name: ")
+            if not re.match(r"^[a-zA-Z0-9\._\-]+$", org_name):
+                 print("\n[ERROR] Invalid organization name.")
+                 continue
+
+            proj_name = get_input("Enter Project Name (optional, press Enter to skip): ")
+            if proj_name and not re.match(r"^[a-zA-Z0-9\._\-]+$", proj_name):
+                 print("\n[ERROR] Invalid project name.")
+                 continue
+            
+            repo_name = get_input("Enter Repository Name: ")
+            if not re.match(r"^[a-zA-Z0-9\._\-]+$", repo_name):
+                 print("\n[ERROR] Invalid repository name.")
+                 continue
+            
+            if proj_name:
+                rel_path = f"{org_name}/{proj_name}/{repo_name}.git"
+                abs_path = os.path.join(REPO_ROOT, "orginizations", org_name, proj_name, f"{repo_name}.git")
+            else:
+                rel_path = f"{org_name}/{repo_name}.git"
+                abs_path = os.path.join(REPO_ROOT, "orginizations", org_name, f"{repo_name}.git")
+
+            # Authorization Check
+            if check_authorization(principals, rel_path, mode="write"):
+                create_bare_repo(abs_path)
+            else:
+                print(f"\n[DENIED] You are not authorized to create {rel_path} (Requires write permissions).")
+
+        elif choice == "3":
+            list_repos(principals)
+        elif choice == "4":
+            delete_repo(principals)
+        elif choice == "5":
+            view_readme(principals)
+        elif choice == "6":
+            view_history(principals)
+        elif choice == "7":
+            print("Goodbye.")
+            break
+        else:
+             print("\n[ERROR] Invalid option.")
+    
+    # Exit cleanly after loop
+    sys.exit(0)
+
+def main() -> None:
+    setup_logging()
+
+    info = get_cert_info()
+    logging.info(f"Authenticated: Key_ID [{info['key_id']}] Serial [{info['serial']}] Principals [{info['principals']}]")
+
+    original_cmd = os.environ.get("SSH_ORIGINAL_COMMAND")
+
+    if not original_cmd:
+        # Require 'interactive' or 'admin' principal for menu access
+        principals = info['principals']
+        if "interactive" in principals or "admin" in principals:
+            logging.info("No SSH_ORIGINAL_COMMAND, entering interactive menu.")
+            interactive_menu(info['principals'], info['key_id'])
+            # interactive_menu calls sys.exit(0) on exit, so we stop here.
+            sys.exit(0)
+        else:
+            logging.warning(f"Interactive access denied for {info['key_id']}.")
+            sys.stderr.write("Restricted: Interactive access is not enabled for this user.\n")
+            sys.exit(1)
+    
+    executable, repo_path = sanitize_git_command(original_cmd)
+
+    # Determine Access Mode
+    access_mode = "read"
+    if executable == "git-receive-pack":
+        access_mode = "write"
+
+    # Principal-based Security Gate
+    if repo_path:
+        if not check_authorization(info['principals'], repo_path, mode=access_mode):
+            logging.warning(f"Access Denied ({access_mode}) for {info['key_id']} to {repo_path}")
+            sys.stderr.write(f"Access Denied: Principal matching '{repo_path}' not found for {access_mode} operation.\n")
+            sys.exit(1)
+
+    # Final Execution
+    git_shell = "/usr/bin/git-shell"
+
+    # Double check executable is safe (redundant but good)
+    if executable:
+         # Construct the absolute path
+         # Custom Logic:
+         # 1. Personal repos: users/username/repo -> /git/users/username/repo
+         # 2. Org repos: orgname/repo -> /git/orginizations/orgname/repo
+
+         if repo_path.startswith("users/"):
+             absolute_repo_path = os.path.join(REPO_ROOT, repo_path)
+         else:
+             absolute_repo_path = os.path.join(REPO_ROOT, "orginizations", repo_path)
+
+         # Reconstruct the command safely
+         # We use simple quoting since we know repo_path is strictly sanitized
+         final_cmd = f"{executable} '{absolute_repo_path}'"
+
+         logging.info(f"Executing: {final_cmd}")
+         os.execv(git_shell, ["git-shell", "-c", final_cmd])
+    else:
+         # Should not happen if original_cmd is present and sanitized, but as a fallback
+         os.execv(git_shell, ["git-shell"])
+
+if __name__ == "__main__":
+    main()

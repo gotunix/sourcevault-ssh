@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+
+import os
+import re
+import sys
+import shlex
+import logging
+import subprocess
+import tempfile
+from typing import Dict, List, Optional, Tuple, Any
+
+# Configure logging to stderr by default or a specific file if needed.
+# In a real environment, you might want strict permissions on the log file.
+LOG_FILE = "/git/logs/ssh.log"
+
+def setup_logging(log_file: str = LOG_FILE) -> None:
+    """Sets up logging configuration."""
+    # Ensure the directory exists if we are going to log to a file
+    log_dir = os.path.dirname(log_file)
+    if log_dir and not os.path.exists(log_dir):
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except OSError:
+            # Fallback to stderr if we can't create the log directory
+            logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+            return
+
+    logging.basicConfig(
+        filename=log_file,
+        filemode='a',
+        format='%(asctime)s %(name)s %(levelname)s %(message)s',
+        datefmt='%H:%M:%S',
+        level=logging.INFO
+    )
+
+def get_cert_info() -> Dict[str, Any]:
+    """
+    Retrieves and parses SSH certificate information from the SSH_USER_AUTH environment variable.
+    Returns a dictionary with 'key_id', 'serial', and 'principals'.
+    """
+    auth_info_path = os.environ.get("SSH_USER_AUTH")
+    if not auth_info_path:
+        logging.error("SSH_USER_AUTH environment variable is not set")
+        sys.exit(1)
+
+    if not os.path.exists(auth_info_path):
+        logging.error(f"Auth info file {auth_info_path} does not exist")
+        sys.exit(1)
+
+    try:
+        with open(auth_info_path, 'r') as f:
+            content = f.read().strip()
+    except IOError as e:
+        logging.error(f"Failed to read auth info: {e}")
+        sys.exit(1)
+
+    if content.startswith("publickey "):
+        content = content.replace("publickey ", "", 1)
+
+    # Use a secure temporary file
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', delete=True) as tf:
+            tf.write(content)
+            tf.flush()
+
+            logging.info("Checking certificate information")
+            try:
+                result = subprocess.run(
+                    ["ssh-keygen", "-L", "-f", tf.name],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+            except subprocess.CalledProcessError as e:
+                logging.error(f"ssh-keygen failed: {e}")
+                sys.exit(1)
+
+    except IOError as e:
+        logging.error(f"Temp file operation failed: {e}")
+        sys.exit(1)
+
+    lines = result.stdout.splitlines()
+    data: Dict[str, Any] = {"key_id": None, "serial": None, "principals": []}
+
+    collecting_principals = False
+    stop_headers = ["Critical Options:", "Extensions:", "Valid:"]
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        if line.startswith("Key ID:"):
+            # Format: "        Key ID: "user_id""
+            # After strip: "Key ID: "user_id""
+            parts = line.split(":", 1)
+            if len(parts) > 1:
+                data["key_id"] = parts[1].strip().replace('"', '')
+            continue
+
+        if line.startswith("Serial:"):
+            parts = line.split(":", 1)
+            if len(parts) > 1:
+                data["serial"] = parts[1].strip()
+            continue
+
+        if line.startswith("Principals:"):
+            collecting_principals = True
+            continue
+
+        if any(line.startswith(header) for header in stop_headers):
+            collecting_principals = False
+            continue
+
+        if collecting_principals:
+            if line and line != "(none)":
+                data["principals"].append(line)
+
+    return data
+
+def sanitize_git_command(command_str: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Parses and sanitizes the git command.
+    Returns a tuple (executable, repo_path).
+    """
+    if not command_str:
+        return None, None
+
+    try:
+        args = shlex.split(command_str)
+    except ValueError:
+        logging.error("Invalid shell formatting in command")
+        sys.exit(1)
+
+    if len(args) < 2:
+        return args[0], None
+
+    executable = args[0]
+    repo_path = args[1]
+
+    # 1. Whitelist the binary
+    allowed_binaries = ["git-upload-pack", "git-receive-pack", "git-upload-archive"]
+    if executable not in allowed_binaries:
+        logging.error(f"Forbidden binary attempted: {executable}")
+        sys.stderr.write(f"Forbidden: {executable} is not an allowed git service.\n")
+        sys.exit(1)
+
+    # 2. Sanitize the Repo Path
+    # Disallow absolute paths and directory traversal
+    if repo_path.startswith("/") or ".." in repo_path:
+        logging.error(f"Path traversal attempt: {repo_path}")
+        sys.stderr.write("Forbidden: Illegal path traversal.\n")
+        sys.exit(1)
+
+    # Only allow safe characters
+    if not re.match(r"^[a-zA-Z0-9\._\-/]+$", repo_path):
+        logging.error(f"Malicious characters in repo path: {repo_path}")
+        sys.stderr.write("Forbidden: Malicious characters in repository name.\n")
+        sys.exit(1)
+
+    return executable, repo_path
+
+def check_authorization(principals: List[str], repo_path: str) -> bool:
+    """
+    Checks if the user is authorized to access the repository.
+    """
+    if not repo_path:
+        # If no repo path (e.g. just checking access or standard shell?),
+        # we might defer to other logic, but usually this means no specific repo check needed yet.
+        return True
+
+    if "admin" in principals:
+        return True
+
+    # Normalize path: remove .git suffix if present
+    clean_path = repo_path
+    if clean_path.endswith('.git'):
+        clean_path = clean_path[:-4]
+    
+    parts = clean_path.split('/')
+    
+    # 1. Check Repo Scope: repo-<path>
+    # e.g. repo-org/project/repo matches org/project/repo.git
+    if f"repo-{clean_path}" in principals:
+        return True
+
+    # 2. Check Project Scope: project-<org>/<project>
+    # Assuming standard structure org/project/repo. 
+    # If path is 'org/repo', we might treat it as a project too depending on depth?
+    # Let's support checking "project-" + any prefix of length >= 2? 
+    # Or strictly the first two components?
+    # Based on "org/project/repo", a project is likely the first 2 parts.
+    if len(parts) >= 2:
+        project_scope = f"project-{parts[0]}/{parts[1]}"
+        if project_scope in principals:
+            return True
+
+    # 3. Check Org Scope: org-<org>
+    if len(parts) >= 1:
+        org_scope = f"org-{parts[0]}"
+        if org_scope in principals:
+            return True
+
+    # 4. Check Personal Repo Scope: users/<username>/repo.git matches principal user-<username>
+    # Path should start with "users" and have at least 2 components (users, username)
+    if len(parts) >= 2 and parts[0] == "users":
+        username = parts[1]
+        user_scope = f"user-{username}"
+        if user_scope in principals:
+            return True
+
+    # Legacy/Fallback: Check strict prefixes (without "org-" etc) if needed?
+    # The user request implies "expect that the principals will be prefixed", 
+    # so we might DROP the old loose prefix check unless "admin" is still there.
+    # We'll keep the old strictly-matching logic just in case for backward compat 
+    # if the user didn't explicitly say replace, but let's prioritize the new schema.
+    # Actually, the user asked "update the permissions to allow...", enabling new features.
+    # I will keep the raw path check as a fallback or remove it if I want to enforce the new schema.
+    # Safe bet: Check for raw matches too (backward compatibility) OR just do what was asked.
+    # "Principals will be prefixed" suggests the *principals* change format.
+    # So we should probably rely on the prefixes.
+    
+    return False
+
+def main() -> None:
+    setup_logging()
+
+    # Don't log all environment variables. It's unsafe.
+    # logging.info(f"New connection. Environment: {os.environ}")
+
+    info = get_cert_info()
+    logging.info(f"Authenticated: Key_ID [{info['key_id']}] Serial [{info['serial']}] Principals [{info['principals']}]")
+
+    original_cmd = os.environ.get("SSH_ORIGINAL_COMMAND")
+
+    if not original_cmd:
+        logging.info("No SSH_ORIGINAL_COMMAND, denying shell access.")
+        sys.stderr.write("Hello! You have successfully authenticated, but we do not provide shell access.\n")
+        sys.exit(1)
+
+    executable, repo_path = sanitize_git_command(original_cmd)
+
+    # Principal-based Security Gate
+    if repo_path:
+        if not check_authorization(info['principals'], repo_path):
+            logging.warning(f"Access Denied for {info['key_id']} to {repo_path}")
+            sys.stderr.write(f"Access Denied: Principal matching '{repo_path}' not found.\n")
+            sys.exit(1)
+
+    # Final Execution
+    git_shell = "/usr/bin/git-shell"
+
+    # Double check executable is safe (redundant but good)
+    if executable:
+         # Construct the absolute path
+         # Custom Logic:
+         # 1. Personal repos: users/username/repo -> /git/users/username/repo
+         # 2. Org repos: orgname/repo -> /git/orginizations/orgname/repo
+         
+         if repo_path.startswith("users/"):
+             absolute_repo_path = f"/git/{repo_path}"
+         else:
+             absolute_repo_path = f"/git/orginizations/{repo_path}"
+         
+         # Reconstruct the command safely
+         # We use simple quoting since we know repo_path is strictly sanitized
+         final_cmd = f"{executable} '{absolute_repo_path}'"
+         
+         logging.info(f"Executing: {final_cmd}")
+         os.execv(git_shell, ["git-shell", "-c", final_cmd])
+    else:
+         # Should not happen if original_cmd is present and sanitized, but as a fallback
+         os.execv(git_shell, ["git-shell"])
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,34 @@
+Include /etc/ssh/sshd_config.d/*.conf
+
+Port 22
+
+#AllowGroups ssh_user
+
+LoginGraceTime 1m
+PermitRootLogin prohibit-password
+MaxAuthTries 4
+MaxSessions 10
+PubkeyAuthentication yes
+
+#RevokedKeys /etc/ssh/revoked_keys
+
+Banner /etc/issue.net
+
+PasswordAuthentication no
+ChallengeResponseAuthentication no
+UsePAM yes
+X11Forwarding yes
+PrintMotd no
+PrintLastLog yes
+
+AcceptEnv LANG LC_*
+Subsystem   sftp    /usr/lib/openssh/sftp-server
+TrustedUserCAKeys /etc/ssh/ca.pub
+#AuthorizedPrincipalsFile /etc/ssh/auth_principals/%u
+PermitUserEnvironment yes
+ExposeAuthInfo yes
+
+
+Match User git
+    # You MUST use the variable inside the ForceCommand string
+    ForceCommand /usr/local/bin/git-shell "$SSH_ORIGINAL_COMMAND"
