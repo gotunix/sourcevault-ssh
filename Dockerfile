@@ -32,11 +32,10 @@ RUN ./configure \
 
 # Stage 2: Build Golang Orchestrator
 # Source lives under src/ for a clean separation of Docker infra and Go code.
+# Zero external dependencies — no go.sum or go mod tidy required.
 FROM golang:1.22-bullseye AS go-builder
 WORKDIR /app
 COPY src/go.mod ./
-# Run tidy first to generate go.sum inside the builder — no local go.sum is required.
-RUN go mod tidy
 COPY src/main.go ./
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/sv-shell main.go
 
