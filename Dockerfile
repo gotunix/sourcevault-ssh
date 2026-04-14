@@ -35,9 +35,10 @@ RUN ./configure \
 FROM golang:1.22-bullseye AS go-builder
 WORKDIR /app
 COPY src/go.mod ./
-RUN go mod download
+# Run tidy first to generate go.sum inside the builder — no local go.sum is required.
+RUN go mod tidy
 COPY src/main.go ./
-RUN go build -o /app/sv-shell main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/sv-shell main.go
 
 # Stage 3: Create the final runtime image
 FROM debian:stable-slim
