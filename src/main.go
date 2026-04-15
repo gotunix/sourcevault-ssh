@@ -59,6 +59,27 @@ func main() {
 	}
 
 	// ------------------------------------------------------------------
+	// Mode 0: Bootstrap — sv-shell --bootstrap
+	// ------------------------------------------------------------------
+	// Called from entrypoint.sh at container startup where the full container
+	// environment is available. Seeds the first admin user from
+	// BOOTSTRAP_ADMIN_KEY. Exits immediately — never reached via sshd.
+	if len(os.Args) == 2 && os.Args[1] == "--bootstrap" {
+		log.Printf("[bootstrap] startup mode — dbDir=%s", dbDir)
+		database, err := openDB(dbDir)
+		if err != nil {
+			log.Printf("[bootstrap] FATAL: could not open db: %v", err)
+			os.Exit(1)
+		}
+		defer database.Close()
+		if err := maybeBootstrap(database); err != nil {
+			log.Printf("[bootstrap] ERROR: %v", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+
+	// ------------------------------------------------------------------
 	// Mode 1: AuthorizedKeysCommand — sv-shell --keys <fingerprint>
 	// ------------------------------------------------------------------
 	// sshd calls this before authenticating. We must respond quickly with
@@ -75,16 +96,6 @@ func main() {
 		}
 		defer database.Close()
 		log.Printf("[key-resolver] db opened at %s", dbDir)
-
-		// Bootstrap: if the database is empty and BOOTSTRAP_ADMIN_KEY is set,
-		// register it as the first admin before doing the lookup. This ensures
-		// the very first admin key gets resolved on its first connection.
-		bootstrapKey := os.Getenv("BOOTSTRAP_ADMIN_KEY")
-		log.Printf("[key-resolver] BOOTSTRAP_ADMIN_KEY present=%v", bootstrapKey != "")
-
-		if err := maybeBootstrap(database); err != nil {
-			log.Printf("[key-resolver] bootstrap warning (non-fatal): %v", err)
-		}
 
 		auth.Resolve(database, fingerprint)
 		return
