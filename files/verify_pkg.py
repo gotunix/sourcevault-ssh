@@ -2,14 +2,13 @@
 # SPDX-FileCopyrightText: 2026 GOTUNIX Networks <code@gotunix.net>
 # SPDX-FileCopyrightText: 2026 Justin Ovens <code@gotunix.net>
 # ----------------------------------------------------------------------------------------------- #
-#                 $$$$$$\   $$$$$$\ $$$$$$$$\ $$\\   $$\ $$\\   $$\ $$$$$$\ $$\\   $$\               #
-#                $$  __$$\ $$  __$$\\__$$  __|$$ |  $$ |$$$\\  $$ |\\_$$  _|$$ |  $$ |              #
-#                $$ /  \\__|$$ /  $$ |  $$ |   $$ |  $$ |$$$$\\ $$ |  $$ |  \\$$\\ $$  |              #
-#                $$ |$$$$\\ $$ |  $$ |  $$ |   $$ |  $$ |$$ $$\\$$ |  $$ |   \\$$$$  /               #
-#                $$ |\\_$$ |$$ |  $$ |  $$ |   $$ |  $$ |$$ \\$$$$ |  $$ |   $$  $$<                #
-#                $$ |  $$ |$$ |  $$ |  $$ |   $$ |  $$ |$$ |\\$$$ |  $$ |  $$  /\\$$\\               #
-#                \\$$$$$$  | $$$$$$  |  $$ |   \\$$$$$$  |$$ | \\$$ |$$$$$$\\ $$ /  $$ |              #
-#                 \\______/  \\______/   \\__|    \\______/ \\__|  \\__|\\______|\\__|  \\__|              #
+#                          #####  ####### ####### #     # #     # ### #     #                     #
+#                         #     # #     #    #    #     # ##    #  #   #   #                      #
+#                         #       #     #    #    #     # # #   #  #    # #                       #
+#                         #  #### #     #    #    #     # #  #  #  #     #                        #
+#                         #     # #     #    #    #     # #   # #  #    # #                       #
+#                         #     # #     #    #    #     # #    ##  #   #   #                      #
+#                          #####  #######    #     #####  #     # ### #     #                     #
 # ----------------------------------------------------------------------------------------------- #
 # Copyright (C) GOTUNIX Networks                                                                  #
 # Copyright (C) Justin Ovens                                                                      #
@@ -20,8 +19,8 @@
 # License, or (at your option) any later version.                                                 #
 #                                                                                                 #
 # This program is distributed in the hope that it will be useful,                                 #
-# but WITHOUT ANY WARRANTY; without even the implied warranty of                                 #
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the                                   #
+# but WITHOUT ANY WARRANTY; without even the implied warranty of                                   #
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the                                    #
 # GNU Affero General Public License for more details.                                             #
 #                                                                                                 #
 # You should have received a copy of the GNU Affero General Public License                        #
