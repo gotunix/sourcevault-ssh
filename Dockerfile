@@ -50,6 +50,7 @@ RUN apt-get update && apt-get install -y \
     libselinux1 \
     zlib1g \
     git \
+    gosu \
     nano \
     vim \
     gettext-base \

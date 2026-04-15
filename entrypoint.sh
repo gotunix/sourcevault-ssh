@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 
 # ---------------------------------------------------------------------------
 # SSH host key generation
@@ -32,9 +31,8 @@ DB_DIR="${SOURCEVAULT_DB_DIR:-/data}"
 mkdir -p "$DB_DIR"
 chown git:git "$DB_DIR"
 
-# Write an env file to DB_DIR so that sv-shell can read it when spawned
-# by sshd's AuthorizedKeysCommand. sshd strips most env vars from the
-# subprocess environment, so we persist the values we need here.
+# Write an env file so sv-shell can read key config values when spawned
+# by sshd's AuthorizedKeysCommand (which runs with a stripped environment).
 ENV_FILE="$DB_DIR/.sv-env"
 {
     echo "SOURCEVAULT_DB_DIR=${DB_DIR}"
@@ -46,13 +44,13 @@ chown git:git "$ENV_FILE"
 echo "[entrypoint] Environment file written to $ENV_FILE"
 
 # ---------------------------------------------------------------------------
-# Bootstrap: seed the first admin user if the database is empty.
-# This runs here (at startup) rather than inside AuthorizedKeysCommand
-# because sshd strips most env vars from the AuthorizedKeysCommand subprocess.
+# Bootstrap: seed the first admin user at startup while env vars are available.
+# gosu drops from root to the git user before running the binary.
 # ---------------------------------------------------------------------------
 if [ -n "$BOOTSTRAP_ADMIN_KEY" ]; then
     echo "[entrypoint] BOOTSTRAP_ADMIN_KEY is set — running bootstrap as git user"
-    su-exec git /usr/local/bin/git-shell --bootstrap
+    gosu git /usr/local/bin/git-shell --bootstrap
+    echo "[entrypoint] Bootstrap complete (exit code: $?)"
 else
     echo "[entrypoint] BOOTSTRAP_ADMIN_KEY not set — skipping bootstrap"
 fi
