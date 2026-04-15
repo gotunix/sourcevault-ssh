@@ -72,7 +72,16 @@ func main() {
 			os.Exit(1)
 		}
 		defer database.Close()
-		if err := maybeBootstrap(database); err != nil {
+
+		// BOOTSTRAP_ADMIN_USER sets the username for the first admin.
+		// Defaults to "admin" if not specified.
+		adminUser := strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_USER"))
+		if adminUser == "" {
+			adminUser = "admin"
+		}
+		log.Printf("[bootstrap] admin username: %s", adminUser)
+
+		if err := maybeBootstrap(database, adminUser); err != nil {
 			log.Printf("[bootstrap] ERROR: %v", err)
 			os.Exit(1)
 		}
@@ -150,16 +159,10 @@ func openDB(dbDir string) (*db.DB, error) {
 	return db.Open(dbDir)
 }
 
-// maybeBootstrap checks if the database is empty and, if so, registers the
-// key specified in BOOTSTRAP_ADMIN_KEY as the first admin user.
-//
-// BOOTSTRAP_ADMIN_KEY should be a full public key line:
-//
-//	ssh-ed25519 AAAA... admin@myhost
-//
-// Once at least one user exists, this function is a no-op. It is safe to
-// leave BOOTSTRAP_ADMIN_KEY set after bootstrapping.
-func maybeBootstrap(database *db.DB) error {
+// maybeBootstrap seeds the first admin user if the database is empty.
+// adminUser is the username to register (typically from BOOTSTRAP_ADMIN_USER).
+// BOOTSTRAP_ADMIN_KEY must contain the full public key line.
+func maybeBootstrap(database *db.DB, adminUser string) error {
 	bootstrapKey := strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_KEY"))
 	if bootstrapKey == "" {
 		log.Printf("[bootstrap] BOOTSTRAP_ADMIN_KEY is not set — skipping")
@@ -175,7 +178,7 @@ func maybeBootstrap(database *db.DB) error {
 		return nil
 	}
 
-	log.Printf("[bootstrap] database is empty — attempting to seed first admin")
+	log.Printf("[bootstrap] database is empty — seeding first admin: %s", adminUser)
 	log.Printf("[bootstrap] parsing key (first 40 chars): %.40s...", bootstrapKey)
 
 	keyType, keyData, comment, err := db.ParsePublicKeyLine(bootstrapKey)
@@ -190,16 +193,16 @@ func maybeBootstrap(database *db.DB) error {
 	}
 	log.Printf("[bootstrap] computed fingerprint: %s", fingerprint)
 
-	user, err := database.CreateUser("admin", true)
+	user, err := database.CreateUser(adminUser, true)
 	if err != nil {
-		return fmt.Errorf("creating bootstrap admin user: %w", err)
+		return fmt.Errorf("creating bootstrap admin user %q: %w", adminUser, err)
 	}
-	log.Printf("[bootstrap] created user 'admin' with id=%d", user.ID)
+	log.Printf("[bootstrap] created user %q with id=%d", adminUser, user.ID)
 
 	if _, err := database.AddKey(user.ID, fingerprint, keyType, keyData, comment); err != nil {
 		return fmt.Errorf("registering bootstrap admin key: %w", err)
 	}
 
-	log.Printf("[bootstrap] SUCCESS — admin user created, key registered: %s", fingerprint)
+	log.Printf("[bootstrap] SUCCESS — admin user %q created, key registered: %s", adminUser, fingerprint)
 	return nil
 }

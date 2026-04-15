@@ -328,15 +328,22 @@ func readLine(reader *bufio.Reader) string {
 	return strings.TrimSpace(line)
 }
 
-// isValidUsername enforces a safe character set for usernames.
+// isValidUsername validates a username or email address.
+// Allowed characters: letters, digits, @, ., -, _, +
+// This covers standard email addresses (user@domain.com) as well as
+// simple alphanumeric usernames.
 func isValidUsername(s string) bool {
+	if len(s) == 0 || len(s) > 254 {
+		return false
+	}
 	for _, r := range s {
 		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') || r == '-' || r == '_') {
+			(r >= '0' && r <= '9') ||
+			r == '-' || r == '_' || r == '.' || r == '@' || r == '+') {
 			return false
 		}
 	}
-	return len(s) > 0 && len(s) <= 64
+	return true
 }
 
 // ---------------------------------------------------------------------------
