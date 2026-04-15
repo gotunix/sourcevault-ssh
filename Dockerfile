@@ -32,12 +32,15 @@ RUN ./configure \
 
 # Stage 2: Build Golang Orchestrator
 # Source lives under src/ for a clean separation of Docker infra and Go code.
-# Zero external dependencies — no go.sum or go mod tidy required.
 FROM golang:1.22-bullseye AS go-builder
 WORKDIR /app
+# Copy go.mod first and resolve dependencies — this layer is cached until
+# go.mod changes, making rebuilds fast when only source files change.
 COPY src/go.mod ./
-COPY src/main.go ./
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/sv-shell main.go
+RUN go mod tidy
+# Now copy all source packages and build the binary.
+COPY src/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/sv-shell ./...
 
 # Stage 3: Create the final runtime image
 FROM debian:stable-slim

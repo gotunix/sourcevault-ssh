@@ -26,9 +26,16 @@ services:
     environment:
       - GIT_SHELL_LOG_PATH=/var/log/git/ssh.log
       - GIT_SHELL_REPO_ROOT=/data/git
+      # SQLite database location — MUST be on a local volume, not NFS.
+      # /data/sourcevault is backed by the named 'sourcevault-data' volume below.
+      - SOURCEVAULT_DB_DIR=/data/sourcevault
+      # Bootstrap: paste your public key here to create the first admin on first boot.
+      # Safe to leave set after bootstrapping (becomes a no-op once any user exists).
+      - BOOTSTRAP_ADMIN_KEY=${BOOTSTRAP_ADMIN_KEY}
     volumes:
       - git-data:/data/git
       - ssh-config:/etc/ssh
+      - sourcevault-data:/data/sourcevault
       - ./logs:/var/log/git
 
 volumes:
@@ -36,10 +43,14 @@ volumes:
     driver: local
   ssh-config:
     driver: local
+  # Local named volume for the SQLite database.
+  # Do NOT change this to NFS — SQLite requires POSIX file locking which NFS does not support reliably.
+  sourcevault-data:
+    driver: local
   git-data:
     driver_opts:
       type: nfs
-      # IP format -> Custom NFS target locally mapping explicitly gracefully cleanly smoothly completely rationally ideally automatically
+      # IP format -> Custom NFS target locally mapping explicitly gracefully
       o: addr=172.16.0.4,rw
       # Host folder -> Custom NFS path
       device: ":/volume1/repositories"

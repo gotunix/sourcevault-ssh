@@ -1,0 +1,88 @@
+// Package auth implements the AuthorizedKeysCommand resolver for SourceVault SSH.
+//
+// When sshd receives a connection, it calls this binary as:
+//
+//	sv-shell --keys <fingerprint>
+//
+// This package looks up the fingerprint in the SQLite database and writes
+// the correct authorized_keys line to stdout. sshd reads it and either
+// allows or denies the connection. If the fingerprint is unknown, nothing
+// is written and sshd denies access silently.
+//
+// The generated authorized_keys line injects two environment variables into
+// the session that the git proxy mode reads:
+//
+//	GIT_USER  — the internal username the connecting key belongs to
+//	GIT_ADMIN — "true" if the user has admin privileges
+//
+// FUTURE API INTEGRATION: Replace db.LookupKeyByFingerprint with an HTTP call
+// to the SourceVault web API when running in platform mode.
+package auth
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/gotunix/sourcevault-ssh/db"
+)
+
+// Resolve looks up the given SSH key fingerprint in the database and writes
+// the authorized_keys output line to stdout for sshd to consume.
+//
+// If the fingerprint is not registered, nothing is printed and the process
+// exits cleanly — sshd interprets the empty output as "key not found" and
+// denies the connection without exposing any information to the client.
+func Resolve(database *db.DB, fingerprint string) {
+	key, err := database.LookupKeyByFingerprint(fingerprint)
+	if err != nil {
+		// Log to stderr only — we must not corrupt ssh key-lookup stdout output.
+		fmt.Fprintf(os.Stderr, "[sourcevault-ssh] key lookup error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if key == nil {
+		// Unknown fingerprint — print nothing, sshd will deny the connection.
+		os.Exit(0)
+	}
+
+	// Fetch the user record to determine admin status.
+	user, err := database.GetUserByUsername(key.Username)
+	if err != nil || user == nil {
+		// User record missing or inconsistent — deny silently.
+		os.Exit(0)
+	}
+
+	isAdmin := "false"
+	if user.IsAdmin {
+		isAdmin = "true"
+	}
+
+	// Build the options string based on the user's role.
+	//
+	// Regular users: no-pty is enforced since they only ever run git wire-protocol commands.
+	//   Allowing a PTY for a git session is unnecessary and slightly reduces attack surface.
+	//
+	// Admin users: no-pty is omitted so the interactive TUI can render correctly
+	//   over an SSH session. All other restrictions remain in place.
+	//
+	// FUTURE: When the user self-service menu is added, regular users will also
+	//   need no-pty removed to access their own management TUI.
+	var restrictions string
+	if user.IsAdmin {
+		// Admins get an interactive session — PTY allowed, everything else locked down.
+		restrictions = "no-port-forwarding,no-X11-forwarding,no-agent-forwarding"
+	} else {
+		// Regular users: git only — no PTY, no forwarding.
+		restrictions = "no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty"
+	}
+
+	fmt.Printf(
+		`command="/usr/local/bin/git-shell",%s,environment="GIT_USER=%s",environment="GIT_ADMIN=%s" %s %s %s`+"\n",
+		restrictions,
+		key.Username,
+		isAdmin,
+		key.KeyType,
+		key.KeyData,
+		key.Comment,
+	)
+}

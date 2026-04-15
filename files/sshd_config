@@ -23,12 +23,24 @@ PrintLastLog yes
 
 AcceptEnv LANG LC_*
 Subsystem   sftp    /usr/lib/openssh/sftp-server
-TrustedUserCAKeys /etc/ssh/ca.pub
-#AuthorizedPrincipalsFile /etc/ssh/auth_principals/%u
-PermitUserEnvironment yes
-ExposeAuthInfo yes
+# Dynamically resolve SSH keys against the SourceVault SQLite database.
+# sshd calls sv-shell with the connecting key's SHA256 fingerprint.
+# sv-shell writes the authorized_keys line (including ForceCommand and env vars)
+# to stdout, or nothing if the key is not registered (sshd denies access).
+AuthorizedKeysCommand     /usr/local/bin/git-shell --keys %f
+AuthorizedKeysCommandUser git
 
+# Required for environment= options in the authorized_keys output to take effect.
+# Allows GIT_USER and GIT_ADMIN to be injected into the session.
+PermitUserEnvironment yes
+
+# Allow admin users to connect interactively (no-pty restriction is lifted
+# per-key by omitting it from the authorized_keys line for admin sessions).
+# Standard git sessions have no-pty enforced by the key resolver output.
 
 Match User git
-    # You MUST use the variable inside the ForceCommand string
-    ForceCommand /usr/local/bin/git-shell "$SSH_ORIGINAL_COMMAND"
+    # No ForceCommand here — the command= option in the authorized_keys output
+    # produced by AuthorizedKeysCommand acts as the per-key ForceCommand.
+    # This keeps all access control logic inside sv-shell.
+    AllowTcpForwarding no
+    X11Forwarding no
