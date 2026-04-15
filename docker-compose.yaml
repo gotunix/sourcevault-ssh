@@ -32,6 +32,8 @@ services:
       # Bootstrap: paste your public key here to create the first admin on first boot.
       # Safe to leave set after bootstrapping (becomes a no-op once any user exists).
       - BOOTSTRAP_ADMIN_KEY=${BOOTSTRAP_ADMIN_KEY}
+      # Username for the bootstrap admin — supports email format. Defaults to "admin".
+      - BOOTSTRAP_ADMIN_USER=${BOOTSTRAP_ADMIN_USER:-admin}
     volumes:
       - git-data:/data/git
       - ssh-config:/etc/ssh
