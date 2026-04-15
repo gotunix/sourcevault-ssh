@@ -20,38 +20,57 @@ const Version = "0.1.0"
 const AppName = "SourceVault SSH"
 
 // inner is the number of printable characters between the box borders.
-const inner = 70
+// 80 fits any standard terminal and leaves room for long module paths.
+const inner = 80
+
+// nameWidth and verWidth are fixed column widths for dependency rows.
+// nameWidth + verWidth + 4 (indent) + 2 (gap) == inner  →  48 + 26 + 4 + 2 = 80
+const (
+	nameWidth = 48
+	verWidth  = 26
+)
+
+// trunc hard-caps s to max visible characters, appending "…" if cut.
+// Module paths and semver strings are ASCII so byte length == display width.
+func trunc(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-1] + "…"
+}
 
 // bar returns a horizontal divider line.
 func bar(left, mid, right string) string {
 	return "  " + left + strings.Repeat(mid, inner) + right
 }
 
-// row formats a single content line padded to fill the box exactly.
+// row formats a single content line padded to exactly inner width.
+// If content is somehow longer than inner it is hard-capped so the right
+// border always aligns.
 func row(content string) string {
-	// Pad content to fill the inner width exactly, then wrap in borders.
-	padded := fmt.Sprintf("%-*s", inner, content)
-	return "  ║" + padded + "║"
+	if len(content) > inner {
+		content = content[:inner-1] + "…"
+	}
+	return fmt.Sprintf("  ║%-*s║", inner, content)
 }
 
-// kv formats a key-value row with the key left-aligned in a fixed column.
+// kv formats a labelled value row; label occupies a fixed 22-char left column.
 func kv(label, value string) string {
-	// Label column: 22 chars. Value column: inner - 22 chars.
 	const labelWidth = 22
-	content := fmt.Sprintf("  %-*s%s", labelWidth, label, value)
-	return row(content)
+	return row(fmt.Sprintf("  %-*s%s", labelWidth, label, value))
 }
 
-// Print writes a full version block to stdout.
+// Print writes the full version block to stdout.
 func Print() {
 	sep := bar("╠", "═", "╣")
 
 	fmt.Println()
 	fmt.Println(bar("╔", "═", "╗"))
 
-	// Title — app name left, version right.
-	title := fmt.Sprintf("  %-*s%*s", inner/2, AppName, inner/2-2, "v"+Version)
-	fmt.Println("  ║" + title + "║")
+	// Title — app name left-aligned, version right-aligned.
+	left := fmt.Sprintf("  %-*s", inner/2, AppName)
+	right := fmt.Sprintf("%*s", inner/2-2, "v"+Version)
+	fmt.Println("  ║" + left + right + "║")
 	fmt.Println(sep)
 
 	fmt.Println(kv("Go Runtime:", runtime.Version()))
@@ -63,22 +82,19 @@ func Print() {
 		fmt.Println(sep)
 		fmt.Println(row("  Dependencies:"))
 		for _, dep := range info.Deps {
-			name := dep.Path
+			// Truncate both columns to their guaranteed max widths so
+			// pseudo-versions like v0.0.0-20230129092748-24d4a6f8daec never overflow.
+			name := trunc(dep.Path, nameWidth)
 			ver := dep.Version
 			if dep.Replace != nil {
-				ver = dep.Replace.Version + " (replaced)"
+				ver = dep.Replace.Version
 			}
-			// Truncate long module paths to keep columns tidy.
-			const nameWidth = 45
-			if len(name) > nameWidth {
-				parts := strings.Split(name, "/")
-				name = "…/" + strings.Join(parts[len(parts)-2:], "/")
-			}
-			fmt.Println(row(fmt.Sprintf("    %-*s%s", nameWidth, name, ver)))
+			ver = trunc(ver, verWidth)
+			fmt.Println(row(fmt.Sprintf("    %-*s  %-*s", nameWidth, name, verWidth, ver)))
 		}
 	}
 
-	// VCS metadata (git commit hash + dirty flag).
+	// VCS metadata — short git commit hash and dirty flag.
 	if ok {
 		var commit, dirty string
 		for _, s := range info.Settings {
@@ -104,4 +120,3 @@ func Print() {
 	fmt.Println(bar("╚", "═", "╝"))
 	fmt.Println()
 }
-
