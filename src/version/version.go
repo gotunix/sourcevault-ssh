@@ -19,42 +19,67 @@ const Version = "0.1.0"
 // AppName is the human-readable application name.
 const AppName = "SourceVault SSH"
 
-// Print writes a full version block to stdout, including:
-//   - Internal application version
-//   - Go runtime version
-//   - All module dependencies and their versions
-//
-// Output goes to stdout so it renders correctly over an SSH TUI session.
+// inner is the number of printable characters between the box borders.
+const inner = 70
+
+// bar returns a horizontal divider line.
+func bar(left, mid, right string) string {
+	return "  " + left + strings.Repeat(mid, inner) + right
+}
+
+// row formats a single content line padded to fill the box exactly.
+func row(content string) string {
+	// Pad content to fill the inner width exactly, then wrap in borders.
+	padded := fmt.Sprintf("%-*s", inner, content)
+	return "  ║" + padded + "║"
+}
+
+// kv formats a key-value row with the key left-aligned in a fixed column.
+func kv(label, value string) string {
+	// Label column: 22 chars. Value column: inner - 22 chars.
+	const labelWidth = 22
+	content := fmt.Sprintf("  %-*s%s", labelWidth, label, value)
+	return row(content)
+}
+
+// Print writes a full version block to stdout.
 func Print() {
+	sep := bar("╠", "═", "╣")
+
 	fmt.Println()
-	fmt.Println("  ╔══════════════════════════════════════════════╗")
-	fmt.Printf("  ║  %-44s║\n", fmt.Sprintf("%s  v%s", AppName, Version))
-	fmt.Println("  ╠══════════════════════════════════════════════╣")
+	fmt.Println(bar("╔", "═", "╗"))
 
-	// Go runtime version (e.g. "go1.22.0").
-	fmt.Printf("  ║  %-18s %-25s║\n", "Go Runtime:", runtime.Version())
-	fmt.Printf("  ║  %-18s %-25s║\n", "OS/Arch:", runtime.GOOS+"/"+runtime.GOARCH)
+	// Title — app name left, version right.
+	title := fmt.Sprintf("  %-*s%*s", inner/2, AppName, inner/2-2, "v"+Version)
+	fmt.Println("  ║" + title + "║")
+	fmt.Println(sep)
 
-	// Read module dependency info embedded by the linker at build time.
+	fmt.Println(kv("Go Runtime:", runtime.Version()))
+	fmt.Println(kv("OS / Arch:", runtime.GOOS+"/"+runtime.GOARCH))
+
+	// Module dependency info embedded by the linker at build time.
 	info, ok := debug.ReadBuildInfo()
-	if ok {
-		fmt.Println("  ╠══════════════════════════════════════════════╣")
-		fmt.Printf("  ║  %-44s║\n", "Dependencies:")
+	if ok && len(info.Deps) > 0 {
+		fmt.Println(sep)
+		fmt.Println(row("  Dependencies:"))
 		for _, dep := range info.Deps {
-			// Trim long module paths to fit the column width.
 			name := dep.Path
-			if len(name) > 30 {
-				parts := strings.Split(name, "/")
-				name = "…/" + parts[len(parts)-1]
-			}
 			ver := dep.Version
 			if dep.Replace != nil {
 				ver = dep.Replace.Version + " (replaced)"
 			}
-			fmt.Printf("  ║    %-26s %-17s║\n", name, ver)
+			// Truncate long module paths to keep columns tidy.
+			const nameWidth = 45
+			if len(name) > nameWidth {
+				parts := strings.Split(name, "/")
+				name = "…/" + strings.Join(parts[len(parts)-2:], "/")
+			}
+			fmt.Println(row(fmt.Sprintf("    %-*s%s", nameWidth, name, ver)))
 		}
+	}
 
-		// VCS build metadata (commit hash, dirty flag) if available.
+	// VCS metadata (git commit hash + dirty flag).
+	if ok {
 		var commit, dirty string
 		for _, s := range info.Settings {
 			switch s.Key {
@@ -71,11 +96,12 @@ func Print() {
 			}
 		}
 		if commit != "" {
-			fmt.Println("  ╠══════════════════════════════════════════════╣")
-			fmt.Printf("  ║  %-18s %-25s║\n", "Git Commit:", commit+dirty)
+			fmt.Println(sep)
+			fmt.Println(kv("Git Commit:", commit+dirty))
 		}
 	}
 
-	fmt.Println("  ╚══════════════════════════════════════════════╝")
+	fmt.Println(bar("╚", "═", "╝"))
 	fmt.Println()
 }
+
