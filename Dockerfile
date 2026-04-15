@@ -34,12 +34,10 @@ RUN ./configure \
 # Source lives under src/ for a clean separation of Docker infra and Go code.
 FROM golang:1.22-bullseye AS go-builder
 WORKDIR /app
-# Copy go.mod first and resolve dependencies — this layer is cached until
-# go.mod changes, making rebuilds fast when only source files change.
-COPY src/go.mod ./
-RUN go mod tidy
-# Now copy all source packages and build the binary.
+# Copy all source first — go mod tidy needs to see the actual imports
+# across all packages before it can generate a complete go.sum.
 COPY src/ ./
+RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/sv-shell ./...
 
 # Stage 3: Create the final runtime image
