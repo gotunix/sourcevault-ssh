@@ -42,15 +42,24 @@ func Resolve(database *db.DB, fingerprint string) {
 
 	if key == nil {
 		// Unknown fingerprint — print nothing, sshd will deny the connection.
+		fmt.Fprintf(os.Stderr, "[key-resolver] fingerprint not found in db: %s\n", fingerprint)
 		os.Exit(0)
 	}
 
+	fmt.Fprintf(os.Stderr, "[key-resolver] key found: fingerprint=%s user=%s\n", fingerprint, key.Username)
+
 	// Fetch the user record to determine admin status.
 	user, err := database.GetUserByUsername(key.Username)
-	if err != nil || user == nil {
-		// User record missing or inconsistent — deny silently.
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[key-resolver] user lookup error for %s: %v\n", key.Username, err)
 		os.Exit(0)
 	}
+	if user == nil {
+		fmt.Fprintf(os.Stderr, "[key-resolver] user record missing for %s — key exists but user does not\n", key.Username)
+		os.Exit(0)
+	}
+
+	fmt.Fprintf(os.Stderr, "[key-resolver] user resolved: username=%s isAdmin=%v\n", user.Username, user.IsAdmin)
 
 	isAdmin := "false"
 	if user.IsAdmin {
@@ -76,8 +85,8 @@ func Resolve(database *db.DB, fingerprint string) {
 		restrictions = "no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty"
 	}
 
-	fmt.Printf(
-		`command="/usr/local/bin/git-shell",%s,environment="GIT_USER=%s",environment="GIT_ADMIN=%s" %s %s %s`+"\n",
+	line := fmt.Sprintf(
+		`command="/usr/local/bin/git-shell",%s,environment="GIT_USER=%s",environment="GIT_ADMIN=%s" %s %s %s`,
 		restrictions,
 		key.Username,
 		isAdmin,
@@ -85,4 +94,6 @@ func Resolve(database *db.DB, fingerprint string) {
 		key.KeyData,
 		key.Comment,
 	)
+	fmt.Fprintf(os.Stderr, "[key-resolver] emitting authorized_keys line for user=%s admin=%s\n", key.Username, isAdmin)
+	fmt.Println(line)
 }
