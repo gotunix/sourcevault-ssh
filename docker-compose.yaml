@@ -27,15 +27,15 @@ services:
       - GIT_SHELL_LOG_PATH=/var/log/git/ssh.log
       - GIT_SHELL_REPO_ROOT=/data/git
       # SQLite database location — MUST be on a local volume, not NFS.
-      # /data/sourcevault is backed by the named 'sourcevault-data' volume below.
-      - SOURCEVAULT_DB_DIR=/data/sourcevault
+      # /data is backed by the named 'sourcevault-data' volume below.
+      - SOURCEVAULT_DB_DIR=/data
       # Bootstrap: paste your public key here to create the first admin on first boot.
       # Safe to leave set after bootstrapping (becomes a no-op once any user exists).
       - BOOTSTRAP_ADMIN_KEY=${BOOTSTRAP_ADMIN_KEY}
     volumes:
       - git-data:/data/git
       - ssh-config:/etc/ssh
-      - sourcevault-data:/data/sourcevault
+      - sourcevault-data:/data
       - ./logs:/var/log/git
 
 volumes:

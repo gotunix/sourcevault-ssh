@@ -55,7 +55,7 @@ func main() {
 	// Override with any local path for non-Docker deployments.
 	dbDir := os.Getenv("SOURCEVAULT_DB_DIR")
 	if dbDir == "" {
-		dbDir = "/data/sourcevault"
+		dbDir = "/data"
 	}
 
 	// ------------------------------------------------------------------
