@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/gotunix/sourcevault-ssh/db"
+	"github.com/gotunix/sourcevault-ssh/version"
 )
 
 // RunAdmin presents the full admin TUI. It blocks until the admin exits.
@@ -35,7 +36,8 @@ func RunAdmin(database *db.DB) {
 		fmt.Println("  5. Add SSH Key to User")
 		fmt.Println("  6. Remove SSH Key from User")
 		fmt.Println("  7. List Keys for User")
-		fmt.Println("  8. Exit")
+		fmt.Println("  8. Version")
+		fmt.Println("  9. Exit")
 		fmt.Print("\n==> ")
 
 		choice := readLine(reader)
@@ -56,6 +58,8 @@ func RunAdmin(database *db.DB) {
 		case "7":
 			listKeys(database, reader)
 		case "8":
+			version.Print()
+		case "9":
 			fmt.Println("Goodbye.")
 			return
 		default:
@@ -89,7 +93,8 @@ func RunUser(database *db.DB, username string) {
 		fmt.Println("  1. List My SSH Keys")
 		fmt.Println("  2. Add SSH Key")
 		fmt.Println("  3. Remove SSH Key")
-		fmt.Println("  4. Exit")
+		fmt.Println("  4. Version")
+		fmt.Println("  5. Exit")
 		fmt.Print("\n==> ")
 
 		choice := readLine(reader)
@@ -102,6 +107,8 @@ func RunUser(database *db.DB, username string) {
 		case "3":
 			removeKeyForUser(database, reader, user)
 		case "4":
+			version.Print()
+		case "5":
 			fmt.Println("Goodbye.")
 			return
 		default:
