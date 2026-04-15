@@ -38,7 +38,7 @@ WORKDIR /app
 # across all packages before it can generate a complete go.sum.
 COPY src/ ./
 RUN go mod tidy
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/sv-shell ./...
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/sv-shell .
 
 # Stage 3: Create the final runtime image
 FROM debian:stable-slim
