@@ -63,6 +63,7 @@ import (
 	"github.com/gotunix/sourcevault-ssh/db"
 	"github.com/gotunix/sourcevault-ssh/menu"
 	"github.com/gotunix/sourcevault-ssh/shell"
+	"github.com/gotunix/sourcevault-ssh/version"
 )
 
 func main() {
@@ -149,6 +150,7 @@ func main() {
 	// ------------------------------------------------------------------
 	origCmd := os.Getenv("SSH_ORIGINAL_COMMAND")
 	if origCmd != "" {
+		fmt.Fprintf(os.Stderr, "SourceVault SSH v%s\n", version.Version)
 		gitUser := os.Getenv("GIT_USER")
 		isAdmin := os.Getenv("GIT_ADMIN") == "true"
 
@@ -188,6 +190,7 @@ func main() {
 	// ------------------------------------------------------------------
 	// Mode 3: Interactive SSH session — no git command was sent
 	// ------------------------------------------------------------------
+	version.Print()
 	database, err := openDB(dbDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Internal error: could not open database: %v\n", err)
