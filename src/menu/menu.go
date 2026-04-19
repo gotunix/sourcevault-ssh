@@ -670,18 +670,9 @@ func addRepo(database *db.DB, reader *bufio.Reader, ownerType string, ownerID in
 	fmt.Print("Enter description: ")
 	description := readLine(reader)
 
-	// Construct logical path
-	// user/<username>/<repo>.git
-	// <orgname>/<repo>.git
-	var logicalPath string
-	var physicalPath string
-	if ownerType == "user" {
-		logicalPath = fmt.Sprintf("user/%s/%s.git", ownerName, name)
-		physicalPath = filepath.Join(repoRoot, logicalPath)
-	} else {
-		logicalPath = fmt.Sprintf("%s/%s.git", ownerName, name)
-		physicalPath = filepath.Join(repoRoot, "organizations", logicalPath)
-	}
+	// Flattened pathing: <ownerName>/<repoName>.git
+	logicalPath := fmt.Sprintf("%s/%s.git", ownerName, name)
+	physicalPath := filepath.Join(repoRoot, logicalPath)
 
 	// 1. Initialize on disk
 	fmt.Printf("Initializing bare repository at %s...\n", logicalPath)
@@ -739,12 +730,7 @@ func removeRepo(database *db.DB, reader *bufio.Reader, repoRoot string) {
 	}
 
 	// 2. Remove from disk
-	var physicalPath string
-	if repo.OwnerType == "user" {
-		physicalPath = filepath.Join(repoRoot, repo.Path)
-	} else {
-		physicalPath = filepath.Join(repoRoot, "organizations", repo.Path)
-	}
+	physicalPath := filepath.Join(repoRoot, repo.Path)
 
 	if err := shell.DeleteRepoFolder(physicalPath); err != nil {
 		fmt.Printf("[WARNING] DB entry removed, but filesystem deletion failed: %v\n", err)
@@ -809,12 +795,8 @@ func manageCollaborators(database *db.DB, reader *bufio.Reader, repoRoot string)
 			_ = database.AddCollaborator(repo.ID, user.ID, role)
 
 			// 2. Disk (Git First)
-			var physicalPath string
-			if repo.OwnerType == "user" {
-				physicalPath = filepath.Join(repoRoot, repo.Path)
-			} else {
-				physicalPath = filepath.Join(repoRoot, "organizations", repo.Path)
-			}
+			physicalPath := filepath.Join(repoRoot, repo.Path)
+
 			key := fmt.Sprintf("access.%s.role", username)
 			_ = shell.SetRepoMetadata(physicalPath, key, role)
 
@@ -827,12 +809,7 @@ func manageCollaborators(database *db.DB, reader *bufio.Reader, repoRoot string)
 			fmt.Print("Enter username to remove: ")
 			username := readLine(reader)
 			// For removal, we need to remove the section from git config
-			var physicalPath string
-			if repo.OwnerType == "user" {
-				physicalPath = filepath.Join(repoRoot, repo.Path)
-			} else {
-				physicalPath = filepath.Join(repoRoot, "organizations", repo.Path)
-			}
+			physicalPath := filepath.Join(repoRoot, repo.Path)
 			
 			// Note: shell.SetRepoMetadata uses git config, but we need section removal.
 			// I'll use a raw command for now or update manager.go.

@@ -89,28 +89,7 @@ func (d *DB) SaveOrgMetadata(repoRoot, orgName string) error {
 // SyncFromFilesystem scans the repository root for organization metadata files
 // and reconstructs the database state. This is the "Recovery" path.
 func (d *DB) SyncFromFilesystem(repoRoot string) error {
-	// 1. Sync Organizations
-	orgsDir := filepath.Join(repoRoot, "organizations")
-	if err := d.syncOrganizations(orgsDir); err != nil {
-		return err
-	}
-
-	// 2. Sync Personal Repositories (user/<username>/<repo>.git)
-	userDir := filepath.Join(repoRoot, "user")
-	if err := d.syncRepositories(userDir, "user"); err != nil {
-		return err
-	}
-
-	// 3. Sync Organization Repositories (organizations/<org>/<repo>.git)
-	if err := d.syncRepositories(orgsDir, "org"); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (d *DB) syncOrganizations(orgsDir string) error {
-	entries, err := os.ReadDir(orgsDir)
+	entries, err := os.ReadDir(repoRoot)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -123,41 +102,74 @@ func (d *DB) syncOrganizations(orgsDir string) error {
 			continue
 		}
 
-		orgName := entry.Name()
-		metaPath := filepath.Join(orgsDir, orgName, "org.yaml")
-		data, err := os.ReadFile(metaPath)
-		if err != nil {
+		name := entry.Name()
+		// Skip known system or hidden directories
+		if strings.HasPrefix(name, ".") || name == "lost+found" {
 			continue
 		}
 
-		var metadata OrgMetadata
-		if err := yaml.Unmarshal(data, &metadata); err != nil {
-			continue
-		}
+		dirPath := filepath.Join(repoRoot, name)
 
-		org, err := d.GetOrgByName(orgName)
+		// Check if it's an organization
+		orgYamlPath := filepath.Join(dirPath, "org.yaml")
+		if _, err := os.Stat(orgYamlPath); err == nil {
+			// Found an organization!
+			if err := d.syncSingleOrganization(name, orgYamlPath); err != nil {
+				log.Printf("[sync] Error syncing organization %q: %v", name, err)
+				continue
+			}
+			// Now sync its repositories
+			if err := d.syncRepositories(dirPath, "org", name); err != nil {
+				log.Printf("[sync] Error syncing repositories for org %q: %v", name, err)
+			}
+		} else {
+			// Treat as a user namespace
+			// We only sync user repos if the user actually exists in the DB
+			user, _ := d.GetUserByUsername(name)
+			if user != nil {
+				if err := d.syncRepositories(dirPath, "user", name); err != nil {
+					log.Printf("[sync] Error syncing repositories for user %q: %v", name, err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func (d *DB) syncSingleOrganization(name, yamlPath string) error {
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		return err
+	}
+
+	var metadata OrgMetadata
+	if err := yaml.Unmarshal(data, &metadata); err != nil {
+		return err
+	}
+
+	org, err := d.GetOrgByName(name)
+	if err != nil {
+		return err
+	}
+	if org == nil {
+		log.Printf("[sync] Re-creating organization: %s", name)
+		org, err = d.CreateOrg(name, metadata.UUID, metadata.Description)
 		if err != nil {
 			return err
 		}
-		if org == nil {
-			log.Printf("[sync] Re-creating organization: %s", orgName)
-			org, err = d.CreateOrg(orgName, metadata.UUID, metadata.Description)
-			if err != nil {
-				return err
-			}
-		}
+	}
 
-		for _, username := range metadata.Owners {
-			_ = d.syncMember(org, username, "owner")
-		}
-		for username, role := range metadata.Users {
-			_ = d.syncMember(org, username, role)
-		}
+	for _, username := range metadata.Owners {
+		_ = d.syncMember(org, username, "owner")
+	}
+	for username, role := range metadata.Users {
+		_ = d.syncMember(org, username, role)
 	}
 	return nil
 }
 
-func (d *DB) syncRepositories(baseDir, ownerType string) error {
+func (d *DB) syncRepositories(baseDir, ownerType, ownerName string) error {
 	return filepath.Walk(baseDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || !info.IsDir() || filepath.Ext(path) != ".git" {
 			return nil
@@ -180,24 +192,21 @@ func (d *DB) syncRepositories(baseDir, ownerType string) error {
 			}
 		}
 
-		name := meta["name"]
-		ownerName := meta["owner"]
-		description := meta["description"]
-		if name == "" || ownerName == "" {
+		repoName := meta["name"]
+		if repoName == "" {
 			return nil
 		}
 
-		// Construct logical path
-		var logicalPath string
+		// Logical path is now just namespace/repo.git
+		logicalPath := fmt.Sprintf("%s/%s", ownerName, filepath.Base(path))
+
 		var ownerID int64
 		if ownerType == "user" {
-			logicalPath = fmt.Sprintf("user/%s/%s.git", ownerName, name)
 			user, _ := d.GetUserByUsername(ownerName)
 			if user != nil {
 				ownerID = user.ID
 			}
 		} else {
-			logicalPath = fmt.Sprintf("%s/%s.git", ownerName, name)
 			org, _ := d.GetOrgByName(ownerName)
 			if org != nil {
 				ownerID = org.ID
@@ -205,14 +214,13 @@ func (d *DB) syncRepositories(baseDir, ownerType string) error {
 		}
 
 		if ownerID == 0 {
-			log.Printf("[sync] Skipping repo %q: owner %q not found in DB", logicalPath, ownerName)
 			return nil
 		}
 
 		repo, _ := d.GetRepoByPath(logicalPath)
 		if repo == nil {
 			log.Printf("[sync] Re-registering repository: %s", logicalPath)
-			_, err = d.CreateRepo(name, ownerType, ownerID, logicalPath, description, false)
+			_, err = d.CreateRepo(repoName, ownerType, ownerID, logicalPath, meta["description"], false)
 			if err != nil {
 				return err
 			}
