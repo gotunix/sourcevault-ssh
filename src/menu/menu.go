@@ -56,6 +56,10 @@ import (
 func RunAdmin(database *db.DB) {
 	reader := bufio.NewReader(os.Stdin)
 	repoRoot := os.Getenv("GIT_SHELL_REPO_ROOT")
+	if repoRoot == "" {
+		repoRoot = "/data/git"
+	}
+	repoRoot = strings.TrimRight(repoRoot, "/")
 
 	fmt.Println("╔══════════════════════════════════════╗")
 	fmt.Println("║     SourceVault SSH — Admin Menu     ║")
@@ -123,6 +127,11 @@ func RunAdmin(database *db.DB) {
 //   - Users cannot elevate privileges or see other users' data.
 func RunUser(database *db.DB, username string) {
 	reader := bufio.NewReader(os.Stdin)
+	repoRoot := os.Getenv("GIT_SHELL_REPO_ROOT")
+	if repoRoot == "" {
+		repoRoot = "/data/git"
+	}
+	repoRoot = strings.TrimRight(repoRoot, "/")
 
 	user, err := database.GetUserByUsername(username)
 	if err != nil || user == nil {

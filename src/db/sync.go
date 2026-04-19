@@ -67,7 +67,7 @@ func (d *DB) SaveOrgMetadata(repoRoot, orgName string) error {
 		}
 	}
 
-	orgDir := filepath.Join(repoRoot, "organizations", orgName)
+	orgDir := filepath.Join(repoRoot, "orgs", orgName)
 	if err := os.MkdirAll(orgDir, 0o750); err != nil {
 		return fmt.Errorf("creating org directory: %w", err)
 	}
