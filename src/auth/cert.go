@@ -88,6 +88,35 @@ func ResolveFromAuthInfo(authInfoPath string, database *db.DB) (string, bool, er
 		// A certificate makes a user an admin if the CA itself is an "Admin CA".
 		isAdmin := ca.IsAdmin
 
+		// 5. JIT Provisioning.
+		// Check if the user exists in the database. If not, create them.
+		user, err := database.GetUserByUsername(username)
+		if err != nil {
+			return "", false, fmt.Errorf("db error checking for user %q: %w", username, err)
+		}
+
+		if user == nil {
+			// User doesn't exist, create them now.
+			if !db.IsValidUsername(username) {
+				return "", false, fmt.Errorf("certificate identity %q is not a valid SourceVault username", username)
+			}
+
+			_, err = database.CreateUser(username, isAdmin)
+			if err != nil {
+				return "", false, fmt.Errorf("failed to auto-provision user %q: %w", username, err)
+			}
+			fmt.Fprintf(os.Stderr, "[auth] Auto-provisioned new user: %s (isAdmin=%v)\n", username, isAdmin)
+		} else {
+			// If the user already exists, we might want to update their admin status
+			// if the CA is an admin CA but they weren't marked as admin before.
+			if isAdmin && !user.IsAdmin {
+				if err := database.SetAdmin(username, true); err != nil {
+					return "", false, fmt.Errorf("failed to promote user %q to admin via CA: %w", username, err)
+				}
+				fmt.Fprintf(os.Stderr, "[auth] Promoted user %s to admin via CA trust\n", username)
+			}
+		}
+
 		return username, isAdmin, nil
 	}
 
