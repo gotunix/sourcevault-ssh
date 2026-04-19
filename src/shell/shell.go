@@ -166,15 +166,19 @@ func Proxy(repoRoot, gitUser string, isAdmin bool, origCmd string) {
 		}
 	}
 
-	// Translate the logical repository path to an absolute filesystem path.
+	// Map the logical path to an absolute filesystem path under repoRoot.
 	//
-	// FUTURE API INTEGRATION: For platform mode, this can query the web API
-	// to resolve UUIDs or mount points rather than using a local convention.
+	// Path conventions:
+	//   users/<username>/<repo>.git  →  <repoRoot>/users/<username>/<repo>.git
+	//   <org>/<repo>.git             →  <repoRoot>/organizations/<org>/<repo>.git
+	//
+	// FUTURE API INTEGRATION: In platform mode this can resolve UUID-based paths
+	// or mount points returned by the SourceVault web API.
 	var absoluteRepoPath string
 	if strings.HasPrefix(repoPath, "users/") {
 		absoluteRepoPath = filepath.Join(repoRoot, repoPath)
 	} else {
-		absoluteRepoPath = filepath.Join(repoRoot, "orginizations", repoPath)
+		absoluteRepoPath = filepath.Join(repoRoot, "organizations", repoPath)
 	}
 
 	finalCmd := fmt.Sprintf("%s '%s'", executable, absoluteRepoPath)

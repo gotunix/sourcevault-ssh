@@ -65,8 +65,11 @@ func RunAdmin(database *db.DB) {
 		fmt.Println("  5. Add SSH Key to User")
 		fmt.Println("  6. Remove SSH Key from User")
 		fmt.Println("  7. List Keys for User")
-		fmt.Println("  8. Version")
-		fmt.Println("  9. Exit")
+		fmt.Println("  8. List Trusted CAs")
+		fmt.Println("  9. Add Trusted CA")
+		fmt.Println(" 10. Remove Trusted CA")
+		fmt.Println(" 11. Version")
+		fmt.Println(" 12. Exit")
 		fmt.Print("\n==> ")
 
 		choice := readLine(reader)
@@ -87,8 +90,14 @@ func RunAdmin(database *db.DB) {
 		case "7":
 			listKeys(database, reader)
 		case "8":
-			version.Print()
+			listCAs(database)
 		case "9":
+			addCA(database, reader)
+		case "10":
+			removeCA(database, reader)
+		case "11":
+			version.Print()
+		case "12":
 			fmt.Println("Goodbye.")
 			return
 		default:
@@ -150,6 +159,8 @@ func RunUser(database *db.DB, username string) {
 // Menu actions
 // ---------------------------------------------------------------------------
 
+// listUsers prints a formatted table of all registered users to stdout.
+// Columns: Username, Admin status, Created timestamp.
 func listUsers(database *db.DB) {
 	users, err := database.ListUsers()
 	if err != nil {
@@ -171,6 +182,9 @@ func listUsers(database *db.DB) {
 	}
 }
 
+// addUser prompts the admin for a username and admin flag, then creates the user.
+// The username is validated against isValidUsername before the database write.
+// An empty username input cancels the operation without error.
 func addUser(database *db.DB, reader *bufio.Reader) {
 	username := prompt(reader, "Username: ")
 	if username == "" {
@@ -193,6 +207,9 @@ func addUser(database *db.DB, reader *bufio.Reader) {
 	fmt.Printf("[OK] User %q created (admin=%v)\n", username, isAdmin)
 }
 
+// removeUser prompts for a username and a confirmation, then permanently deletes
+// the user and all their associated SSH keys (enforced by the ON DELETE CASCADE
+// foreign key in the database schema). Requires the admin to type "yes" explicitly.
 func removeUser(database *db.DB, reader *bufio.Reader) {
 	username := prompt(reader, "Username to remove: ")
 	if username == "" {
@@ -213,6 +230,9 @@ func removeUser(database *db.DB, reader *bufio.Reader) {
 	fmt.Printf("[OK] User %q and all associated keys removed.\n", username)
 }
 
+// toggleAdmin flips the admin flag for a user.
+// If the user is currently an admin, they are demoted; if they are not, they are promoted.
+// The current state is fetched from the database so the UI always reflects truth.
 func toggleAdmin(database *db.DB, reader *bufio.Reader) {
 	username := prompt(reader, "Username: ")
 	if username == "" {
@@ -238,6 +258,10 @@ func toggleAdmin(database *db.DB, reader *bufio.Reader) {
 	fmt.Printf("[OK] Admin access %s for %q.\n", status, username)
 }
 
+// addKey adds a new SSH public key to any user's account (admin only).
+// The admin provides a username and a full public key line in authorized_keys format
+// (e.g. "ssh-ed25519 AAAA... comment"). The key is parsed, fingerprinted, and stored.
+// Duplicate fingerprints are rejected — each key may only be registered once globally.
 func addKey(database *db.DB, reader *bufio.Reader) {
 	username := prompt(reader, "Username: ")
 	if username == "" {
@@ -279,6 +303,9 @@ func addKey(database *db.DB, reader *bufio.Reader) {
 	fmt.Printf("[OK] Key added for %q\n  Fingerprint: %s\n  Comment: %s\n", username, fingerprint, comment)
 }
 
+// removeKey removes an SSH key by its SHA256 fingerprint (admin only).
+// The fingerprint is validated by looking up the key first, which also allows
+// the UI to display the owning username in the confirmation prompt.
 func removeKey(database *db.DB, reader *bufio.Reader) {
 	fingerprint := prompt(reader, "Key fingerprint to remove (SHA256:...): ")
 	if fingerprint == "" {
@@ -310,6 +337,9 @@ func removeKey(database *db.DB, reader *bufio.Reader) {
 	fmt.Printf("[OK] Key %s removed.\n", fingerprint)
 }
 
+// listKeys lists all SSH keys registered to a given username (admin only).
+// Prompts the admin for a username, then prints fingerprint, key type, and comment
+// for each key associated with that user account.
 func listKeys(database *db.DB, reader *bufio.Reader) {
 	username := prompt(reader, "Username: ")
 	if username == "" {
@@ -476,4 +506,90 @@ func removeKeyForUser(database *db.DB, reader *bufio.Reader, user *db.User) {
 		return
 	}
 	fmt.Printf("  [OK] Key %s removed.\n", fingerprint)
+}
+
+// ---------------------------------------------------------------------------
+// CA management helpers
+// ---------------------------------------------------------------------------
+
+// listCAs prints a formatted table of all trusted CAs.
+func listCAs(database *db.DB) {
+	cas, err := database.ListTrustedCAs()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[ERROR] Could not list CAs: %v\n", err)
+		return
+	}
+	if len(cas) == 0 {
+		fmt.Println("  (no trusted CAs registered)")
+		return
+	}
+	fmt.Printf("\n  %-20s  %-8s  %s\n", "CA Name", "Admin", "Fingerprint")
+	fmt.Println("  " + strings.Repeat("─", 80))
+	for _, ca := range cas {
+		admin := "no"
+		if ca.IsAdmin {
+			admin = "yes"
+		}
+		fmt.Printf("  %-20s  %-8s  %s\n", ca.Name, admin, ca.Fingerprint)
+	}
+}
+
+// addCA prompts for a CA name and public key line, then registers it.
+func addCA(database *db.DB, reader *bufio.Reader) {
+	name := prompt(reader, "CA Name (e.g. 'Engineering'): ")
+	if name == "" {
+		fmt.Println("[CANCELLED]")
+		return
+	}
+
+	adminStr := prompt(reader, "Treat all certs from this CA as admins? (yes/no): ")
+	isAdmin := strings.ToLower(adminStr) == "yes"
+
+	fmt.Println("Paste the CA public key line (ssh-ed25519 AAAA... comment):")
+	fmt.Print("> ")
+	keyLine := readLine(reader)
+	if keyLine == "" {
+		fmt.Println("[CANCELLED]")
+		return
+	}
+
+	keyType, keyData, _, err := db.ParsePublicKeyLine(keyLine)
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+
+	fingerprint, err := db.FingerprintKey(keyData)
+	if err != nil {
+		fmt.Printf("[ERROR] Could not compute fingerprint: %v\n", err)
+		return
+	}
+
+	if _, err := database.AddTrustedCA(name, fingerprint, keyType, keyData, isAdmin); err != nil {
+		fmt.Printf("[ERROR] Could not add CA (duplicate name or key?): %v\n", err)
+		return
+	}
+
+	fmt.Printf("[OK] CA %q added (admin=%v)\n  Fingerprint: %s\n", name, isAdmin, fingerprint)
+}
+
+// removeCA prompts for a CA name and deletes it.
+func removeCA(database *db.DB, reader *bufio.Reader) {
+	name := prompt(reader, "CA Name to remove: ")
+	if name == "" {
+		fmt.Println("[CANCELLED]")
+		return
+	}
+
+	confirm := prompt(reader, fmt.Sprintf("Remove trusted CA %q? (yes/no): ", name))
+	if strings.ToLower(confirm) != "yes" {
+		fmt.Println("[CANCELLED]")
+		return
+	}
+
+	if err := database.RemoveTrustedCA(name); err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+	fmt.Printf("[OK] CA %q removed.\n", name)
 }

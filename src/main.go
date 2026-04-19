@@ -145,14 +145,37 @@ func main() {
 	origCmd := os.Getenv("SSH_ORIGINAL_COMMAND")
 	if origCmd != "" {
 		gitUser := os.Getenv("GIT_USER")
+		isAdmin := os.Getenv("GIT_ADMIN") == "true"
+
+		// If GIT_USER is not set, we might be authenticating via an SSH certificate
+		// that bypassed the resolver but is exposed via SSH_USER_AUTH.
+		authFile := os.Getenv("SSH_USER_AUTH")
+		if gitUser == "" && authFile != "" {
+			database, err := openDB(dbDir)
+			if err != nil {
+				log.Printf("Internal error: could not open database for cert resolution: %v", err)
+				fmt.Fprintf(os.Stderr, "Forbidden: internal error.\n")
+				os.Exit(1)
+			}
+			defer database.Close()
+
+			var resolveErr error
+			gitUser, isAdmin, resolveErr = auth.ResolveFromAuthInfo(authFile, database)
+			if resolveErr != nil {
+				log.Printf("Certificate resolution failed: %v", resolveErr)
+				fmt.Fprintf(os.Stderr, "Forbidden: certificate could not be resolved or is untrusted.\n")
+				os.Exit(1)
+			}
+			log.Printf("Identity resolved via certificate: user=%s isAdmin=%v", gitUser, isAdmin)
+		}
+
 		if gitUser == "" {
-			// This should never happen if sshd_config is correct (key resolver
-			// always injects GIT_USER). Guard against misconfiguration.
-			log.Println("GIT_USER is not set — check AuthorizedKeysCommand and PermitUserEnvironment config")
+			// This should never happen if sshd_config is correct.
+			log.Println("GIT_USER is not set and no valid certificate found — check AuthorizedKeysCommand and ExposeAuthInfo config")
 			fmt.Fprintf(os.Stderr, "Forbidden: user identity could not be determined.\n")
 			os.Exit(1)
 		}
-		isAdmin := os.Getenv("GIT_ADMIN") == "true"
+
 		shell.Proxy(repoRoot, gitUser, isAdmin, origCmd)
 		return
 	}
@@ -169,6 +192,19 @@ func main() {
 
 	isAdmin := os.Getenv("GIT_ADMIN") == "true"
 	gitUser := os.Getenv("GIT_USER")
+
+	// Fallback to certificate resolution for interactive sessions too.
+	authFile := os.Getenv("SSH_USER_AUTH")
+	if gitUser == "" && authFile != "" {
+		var resolveErr error
+		gitUser, isAdmin, resolveErr = auth.ResolveFromAuthInfo(authFile, database)
+		if resolveErr != nil {
+			log.Printf("Certificate resolution failed for interactive session: %v", resolveErr)
+			fmt.Fprintf(os.Stderr, "Restricted: identity could not be resolved from certificate.\n")
+			os.Exit(1)
+		}
+		log.Printf("Identity resolved via certificate for interactive session: user=%s isAdmin=%v", gitUser, isAdmin)
+	}
 
 	if isAdmin {
 		// Admin TUI — full user and key management.

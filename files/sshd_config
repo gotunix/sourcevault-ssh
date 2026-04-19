@@ -44,3 +44,11 @@ Match User git
     # This keeps all access control logic inside sv-shell.
     AllowTcpForwarding no
     X11Forwarding no
+
+# Required for SSH certificate identity resolution.
+# Writes auth info to a file pointed to by $SSH_USER_AUTH.
+ExposeAuthInfo yes
+
+# Trust the CA public key for initial certificate validation.
+# The entrypoint script ensures this file exists at /etc/ssh/ca.pub.
+TrustedUserCAKeys /etc/ssh/ca.pub

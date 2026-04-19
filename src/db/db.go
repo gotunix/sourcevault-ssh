@@ -70,6 +70,17 @@ type SSHKey struct {
 	CreatedAt   string
 }
 
+// TrustedCA represents a Certificate Authority public key trusted by the system.
+type TrustedCA struct {
+	ID          int64
+	Name        string
+	Fingerprint string
+	KeyType     string
+	KeyData     string
+	IsAdmin     bool
+	CreatedAt   string
+}
+
 // DB wraps the SQLite connection and exposes domain-level operations.
 type DB struct {
 	conn *sql.DB
@@ -127,6 +138,16 @@ func (d *DB) migrate() error {
 			key_type    TEXT    NOT NULL,
 			key_data    TEXT    NOT NULL,
 			comment     TEXT    NOT NULL DEFAULT '',
+			created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS trusted_cas (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT    NOT NULL UNIQUE,
+			fingerprint TEXT    NOT NULL UNIQUE,
+			key_type    TEXT    NOT NULL,
+			key_data    TEXT    NOT NULL,
+			is_admin    INTEGER NOT NULL DEFAULT 0,
 			created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 		);
 	`)
@@ -329,5 +350,78 @@ func (d *DB) ListKeysForUser(userID int64) ([]SSHKey, error) {
 // RemoveKeyByFingerprint deletes a key by its fingerprint.
 func (d *DB) RemoveKeyByFingerprint(fingerprint string) error {
 	_, err := d.conn.Exec(`DELETE FROM ssh_keys WHERE fingerprint = ?`, fingerprint)
+	return err
+}
+
+// ---------------------------------------------------------------------------
+// Trusted CA operations
+// ---------------------------------------------------------------------------
+
+// AddTrustedCA registers a new trusted CA public key.
+func (d *DB) AddTrustedCA(name, fingerprint, keyType, keyData string, isAdmin bool) (*TrustedCA, error) {
+	admin := 0
+	if isAdmin {
+		admin = 1
+	}
+	res, err := d.conn.Exec(
+		`INSERT INTO trusted_cas (name, fingerprint, key_type, key_data, is_admin) VALUES (?, ?, ?, ?, ?)`,
+		name, fingerprint, keyType, keyData, admin,
+	)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &TrustedCA{
+		ID: id, Name: name, Fingerprint: fingerprint,
+		KeyType: keyType, KeyData: keyData, IsAdmin: isAdmin,
+	}, nil
+}
+
+// ListTrustedCAs returns all trusted CAs ordered by name.
+func (d *DB) ListTrustedCAs() ([]TrustedCA, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, name, fingerprint, key_type, key_data, is_admin, created_at FROM trusted_cas ORDER BY name`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cas []TrustedCA
+	for rows.Next() {
+		var ca TrustedCA
+		var isAdmin int
+		if err := rows.Scan(&ca.ID, &ca.Name, &ca.Fingerprint, &ca.KeyType, &ca.KeyData, &isAdmin, &ca.CreatedAt); err != nil {
+			return nil, err
+		}
+		ca.IsAdmin = isAdmin == 1
+		cas = append(cas, ca)
+	}
+	return cas, nil
+}
+
+// LookupCAByFingerprint finds a trusted CA by its SHA256 fingerprint.
+func (d *DB) LookupCAByFingerprint(fingerprint string) (*TrustedCA, error) {
+	var ca TrustedCA
+	var isAdmin int
+	err := d.conn.QueryRow(`
+		SELECT id, name, fingerprint, key_type, key_data, is_admin, created_at
+		FROM trusted_cas WHERE fingerprint = ?
+	`, fingerprint).Scan(
+		&ca.ID, &ca.Name, &ca.Fingerprint, &ca.KeyType, &ca.KeyData, &isAdmin, &ca.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	ca.IsAdmin = isAdmin == 1
+	return &ca, nil
+}
+
+// RemoveTrustedCA deletes a trusted CA by its name.
+func (d *DB) RemoveTrustedCA(name string) error {
+	_, err := d.conn.Exec(`DELETE FROM trusted_cas WHERE name = ?`, name)
 	return err
 }
