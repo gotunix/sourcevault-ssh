@@ -153,63 +153,39 @@ func Proxy(database *db.DB, repoRoot, gitUser string, isAdmin bool, origCmd stri
 	}
 
 	// Access control for repositories.
-	// Current structure: <namespace>/<repo>.git
-	// Where <namespace> can be a username or an org name.
 	//
-	parts := strings.SplitN(repoPath, "/", 2)
-	if len(parts) < 2 {
-		log.Printf("Invalid repo path format: %q", repoPath)
-		fmt.Fprintf(os.Stderr, "Forbidden: invalid repository path.\n")
-		os.Exit(1)
-	}
-	namespace := parts[0]
-
-	// 1. Check if the namespace is an organization.
-	org, err := database.GetOrgByName(namespace)
-	if err != nil {
-		log.Printf("Internal error checking org %q: %v", namespace, err)
-		fmt.Fprintf(os.Stderr, "Internal error.\n")
-		os.Exit(1)
-	}
-
-	if org != nil {
-		// It's an organization repository.
+	// Convention:
+	//   users/<username>/... — personal repos
+	//   <org>/...            — organisation repos
+	//
+	var absoluteRepoPath string
+	if strings.HasPrefix(repoPath, "users/") {
+		parts := strings.SplitN(repoPath, "/", 3)
+		if len(parts) >= 2 && parts[1] != gitUser && !isAdmin {
+			log.Printf("Access denied: user %q attempted to access %q", gitUser, repoPath)
+			fmt.Fprintf(os.Stderr, "Access denied: you do not have permission to access %s\n", repoPath)
+			os.Exit(1)
+		}
+		absoluteRepoPath = filepath.Join(repoRoot, repoPath)
+	} else {
+		// Organization path
+		parts := strings.SplitN(repoPath, "/", 2)
+		orgName := parts[0]
 		if !isAdmin {
-			member, err := database.IsMemberOfOrg(gitUser, namespace)
+			member, err := database.IsMemberOfOrg(gitUser, orgName)
 			if err != nil {
-				log.Printf("Internal error checking membership for user %q in org %q: %v", gitUser, namespace, err)
-				fmt.Fprintf(os.Stderr, "Internal error.\n")
+				log.Printf("Internal error checking membership for user %q in org %q: %v", gitUser, orgName, err)
+				fmt.Fprintf(os.Stderr, "Internal error: could not verify permissions.\n")
 				os.Exit(1)
 			}
 			if !member {
-				log.Printf("Access denied: user %q is not a member of organization %q", gitUser, namespace)
-				fmt.Fprintf(os.Stderr, "Access denied: you are not a member of organization %q\n", namespace)
+				log.Printf("Access denied: user %q is not a member of organization %q", gitUser, orgName)
+				fmt.Fprintf(os.Stderr, "Access denied: you are not a member of organization %q\n", orgName)
 				os.Exit(1)
 			}
 		}
-	} else {
-		// It's a user repository.
-		// For personal repos, the namespace must match the username (unless admin).
-		if namespace != gitUser && !isAdmin {
-			// Check if the user is an explicit collaborator.
-			repo, _ := database.GetRepoByPath(repoPath)
-			hasAccess := false
-			if repo != nil {
-				user, _ := database.GetUserByUsername(gitUser)
-				if user != nil {
-					hasAccess, _ = database.IsCollaborator(user.ID, repo.ID)
-				}
-			}
-
-			if !hasAccess {
-				log.Printf("Access denied: user %q attempted to access personal repo of %q", gitUser, namespace)
-				fmt.Fprintf(os.Stderr, "Access denied: you do not have permission to access %s\n", repoPath)
-				os.Exit(1)
-			}
-		}
+		absoluteRepoPath = filepath.Join(repoRoot, "orgs", repoPath)
 	}
-
-	absoluteRepoPath := filepath.Join(repoRoot, repoPath)
 
 	// Verify the repository is registered in the database.
 	// This prevents access to directories on disk that aren't officially "SourceVault Repositories".
