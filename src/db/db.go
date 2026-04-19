@@ -250,6 +250,7 @@ func FingerprintKey(keyData string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid key data (not valid base64): %w", err)
 	}
+	sum := sha256.Sum256(raw)
 	return "SHA256:" + base64.RawStdEncoding.EncodeToString(sum[:]), nil
 }
 
