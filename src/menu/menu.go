@@ -41,16 +41,21 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/gotunix/sourcevault-ssh/db"
+	"github.com/gotunix/sourcevault-ssh/shell"
 	"github.com/gotunix/sourcevault-ssh/version"
+	"github.com/google/uuid"
 )
 
 // RunAdmin presents the full admin TUI. It blocks until the admin exits.
 // Only users with GIT_ADMIN=true reach this path.
 func RunAdmin(database *db.DB) {
 	reader := bufio.NewReader(os.Stdin)
+	repoRoot := os.Getenv("GIT_SHELL_REPO_ROOT")
 
 	fmt.Println("╔══════════════════════════════════════╗")
 	fmt.Println("║     SourceVault SSH — Admin Menu     ║")
@@ -68,8 +73,9 @@ func RunAdmin(database *db.DB) {
 		fmt.Println("  8. List Trusted CAs")
 		fmt.Println("  9. Add Trusted CA")
 		fmt.Println(" 10. Remove Trusted CA")
-		fmt.Println(" 11. Version")
-		fmt.Println(" 12. Exit")
+		fmt.Println(" 11. Manage Organizations")
+		fmt.Println(" 12. Version")
+		fmt.Println(" 13. Exit")
 		fmt.Print("\n==> ")
 
 		choice := readLine(reader)
@@ -96,8 +102,10 @@ func RunAdmin(database *db.DB) {
 		case "10":
 			removeCA(database, reader)
 		case "11":
-			version.Print()
+			runOrgMenu(database, reader, repoRoot)
 		case "12":
+			version.Print()
+		case "13":
 			fmt.Println("Goodbye.")
 			return
 		default:
@@ -131,8 +139,10 @@ func RunUser(database *db.DB, username string) {
 		fmt.Println("  1. List My SSH Keys")
 		fmt.Println("  2. Add SSH Key")
 		fmt.Println("  3. Remove SSH Key")
-		fmt.Println("  4. Version")
-		fmt.Println("  5. Exit")
+		fmt.Println("  4. Manage My Repositories")
+		fmt.Println("  5. List All Accessible Repositories")
+		fmt.Println("  6. Version")
+		fmt.Println("  7. Exit")
 		fmt.Print("\n==> ")
 
 		choice := readLine(reader)
@@ -145,8 +155,12 @@ func RunUser(database *db.DB, username string) {
 		case "3":
 			removeKeyForUser(database, reader, user)
 		case "4":
-			version.Print()
+			runRepoMenu(database, reader, user.ID, user.Username, os.Getenv("GIT_SHELL_REPO_ROOT"))
 		case "5":
+			listAccessibleRepos(database, username)
+		case "6":
+			version.Print()
+		case "7":
 			fmt.Println("Goodbye.")
 			return
 		default:
@@ -574,4 +588,442 @@ func removeCA(database *db.DB, reader *bufio.Reader) {
 		return
 	}
 	fmt.Printf("[OK] CA %q removed.\n", name)
+}
+// ---------------------------------------------------------------------------
+// Repository Management TUI
+// ---------------------------------------------------------------------------
+
+func runRepoMenu(database *db.DB, reader *bufio.Reader, ownerID int64, ownerName, repoRoot string) {
+	for {
+		fmt.Printf("\n--- Repository Management for %s ---\n", ownerName)
+		fmt.Println("1. List Repositories")
+		fmt.Println("2. Create Repository")
+		fmt.Println("3. Delete Repository")
+		fmt.Println("4. Manage Collaborators")
+		fmt.Println("5. Back")
+		fmt.Print("\n(repos) ==> ")
+
+		choice := readLine(reader)
+		switch choice {
+		case "1":
+			listRepos(database, "user", ownerID)
+		case "2":
+			addRepo(database, reader, "user", ownerID, ownerName, repoRoot)
+		case "3":
+			removeRepo(database, reader, repoRoot)
+		case "4":
+			manageCollaborators(database, reader, repoRoot)
+		case "5":
+			return
+		}
+	}
+}
+
+func runOrgRepoMenu(database *db.DB, reader *bufio.Reader, orgID int64, orgName, repoRoot string) {
+	for {
+		fmt.Printf("\n--- Repository Management for Org: %s ---\n", orgName)
+		fmt.Println("1. List Repositories")
+		fmt.Println("2. Create Repository")
+		fmt.Println("3. Delete Repository")
+		fmt.Println("4. Manage Collaborators")
+		fmt.Println("5. Back")
+		fmt.Print("\n(org-repos) ==> ")
+
+		choice := readLine(reader)
+		switch choice {
+		case "1":
+			listRepos(database, "org", orgID)
+		case "2":
+			addRepo(database, reader, "org", orgID, orgName, repoRoot)
+		case "3":
+			removeRepo(database, reader, repoRoot)
+		case "4":
+			manageCollaborators(database, reader, repoRoot)
+		case "5":
+			return
+		}
+	}
+}
+
+func listRepos(database *db.DB, ownerType string, ownerID int64) {
+	repos, err := database.ListReposByOwner(ownerType, ownerID)
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+	fmt.Println("\nRepositories:")
+	fmt.Printf("  %-20s  %-40s  %s\n", "Name", "Path", "Description")
+	fmt.Println("  " + strings.Repeat("─", 80))
+	for _, r := range repos {
+		fmt.Printf("  %-20s  %-40s  %s\n", r.Name, r.Path, r.Description)
+	}
+}
+
+func addRepo(database *db.DB, reader *bufio.Reader, ownerType string, ownerID int64, ownerName, repoRoot string) {
+	fmt.Print("Enter repository name: ")
+	name := readLine(reader)
+	if name == "" || !db.IsValidUsername(name) {
+		fmt.Println("[ERROR] Invalid repository name.")
+		return
+	}
+
+	fmt.Print("Enter description: ")
+	description := readLine(reader)
+
+	// Construct logical path
+	// user/<username>/<repo>.git
+	// <orgname>/<repo>.git
+	var logicalPath string
+	var physicalPath string
+	if ownerType == "user" {
+		logicalPath = fmt.Sprintf("user/%s/%s.git", ownerName, name)
+		physicalPath = filepath.Join(repoRoot, logicalPath)
+	} else {
+		logicalPath = fmt.Sprintf("%s/%s.git", ownerName, name)
+		physicalPath = filepath.Join(repoRoot, "organizations", logicalPath)
+	}
+
+	// 1. Initialize on disk
+	fmt.Printf("Initializing bare repository at %s...\n", logicalPath)
+	if err := shell.InitBareRepo(physicalPath); err != nil {
+		fmt.Printf("[ERROR] Physical initialization failed: %v\n", err)
+		return
+	}
+
+	// 2. Register in DB
+	_, err := database.CreateRepo(name, ownerType, ownerID, logicalPath, description, false)
+	if err != nil {
+		fmt.Printf("[ERROR] Database registration failed: %v\n", err)
+		return
+	}
+
+	// 3. Write "Git First" metadata to the repo config
+	_ = shell.SetRepoMetadata(physicalPath, "name", name)
+	_ = shell.SetRepoMetadata(physicalPath, "owner", ownerName)
+	_ = shell.SetRepoMetadata(physicalPath, "owner-type", ownerType)
+	_ = shell.SetRepoMetadata(physicalPath, "description", description)
+
+	// 4. Cache the resulting config in the database
+	cfg, err := shell.ReadFullSourceVaultConfig(physicalPath)
+	if err == nil {
+		_ = database.UpdateRepoConfigCache(logicalPath, cfg)
+	}
+
+	fmt.Printf("[OK] Repository %q created and initialized with Git First metadata.\n", logicalPath)
+}
+
+func removeRepo(database *db.DB, reader *bufio.Reader, repoRoot string) {
+	fmt.Print("Enter logical path to REMOVE (e.g. user/alice/myrepo.git): ")
+	path := readLine(reader)
+	if path == "" {
+		return
+	}
+
+	repo, err := database.GetRepoByPath(path)
+	if err != nil || repo == nil {
+		fmt.Printf("[ERROR] Repository %q not found in database.\n", path)
+		return
+	}
+
+	fmt.Printf("ARE YOU SURE? This will PERMANENTLY delete all Git data for %q. [y/N]: ", path)
+	confirm := readLine(reader)
+	if strings.ToLower(confirm) != "y" {
+		fmt.Println("[CANCELLED]")
+		return
+	}
+
+	// 1. Remove from DB
+	if err := database.DeleteRepo(path); err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+
+	// 2. Remove from disk
+	var physicalPath string
+	if repo.OwnerType == "user" {
+		physicalPath = filepath.Join(repoRoot, repo.Path)
+	} else {
+		physicalPath = filepath.Join(repoRoot, "organizations", repo.Path)
+	}
+
+	if err := shell.DeleteRepoFolder(physicalPath); err != nil {
+		fmt.Printf("[WARNING] DB entry removed, but filesystem deletion failed: %v\n", err)
+	} else {
+		fmt.Println("[OK] Repository permanently deleted.")
+	}
+}
+
+func listAccessibleRepos(database *db.DB, username string) {
+	repos, err := database.ListAccessibleRepos(username)
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+
+	fmt.Printf("\n--- Repositories Accessible by %s ---\n", username)
+	fmt.Printf("  %-30s  %-10s  %s\n", "Path", "Role", "Description")
+	fmt.Println("  " + strings.Repeat("─", 80))
+	for _, r := range repos {
+		fmt.Printf("  %-30s  %-10s  %s\n", r.Path, r.UserRole, r.Description)
+	}
+}
+
+func manageCollaborators(database *db.DB, reader *bufio.Reader, repoRoot string) {
+	fmt.Print("Enter repository path (e.g. user/alice/myrepo.git): ")
+	path := readLine(reader)
+	repo, err := database.GetRepoByPath(path)
+	if err != nil || repo == nil {
+		fmt.Printf("[ERROR] Repository %q not found.\n", path)
+		return
+	}
+
+	for {
+		fmt.Printf("\n--- Collaborators for %s ---\n", path)
+		fmt.Println("1. List Collaborators")
+		fmt.Println("2. Add Collaborator")
+		fmt.Println("3. Remove Collaborator")
+		fmt.Println("4. Back")
+		fmt.Print("\n(collaborators) ==> ")
+
+		choice := readLine(reader)
+		switch choice {
+		case "1":
+			// No direct ListCollaborators for now, I'll add a helper if needed or just use GetRepoByPath cache
+			fmt.Println("Config Cache from DB:")
+			fmt.Println(repo.ConfigCache)
+		case "2":
+			fmt.Print("Enter username: ")
+			username := readLine(reader)
+			user, _ := database.GetUserByUsername(username)
+			if user == nil {
+				fmt.Printf("[ERROR] User %q not found.\n", username)
+				continue
+			}
+			fmt.Print("Role (read/write) [read]: ")
+			role := readLine(reader)
+			if role == "" {
+				role = "read"
+			}
+
+			// 1. DB
+			_ = database.AddCollaborator(repo.ID, user.ID, role)
+
+			// 2. Disk (Git First)
+			var physicalPath string
+			if repo.OwnerType == "user" {
+				physicalPath = filepath.Join(repoRoot, repo.Path)
+			} else {
+				physicalPath = filepath.Join(repoRoot, "organizations", repo.Path)
+			}
+			key := fmt.Sprintf("access.%s.role", username)
+			_ = shell.SetRepoMetadata(physicalPath, key, role)
+
+			// 3. Update Cache
+			cfg, _ := shell.ReadFullSourceVaultConfig(physicalPath)
+			_ = database.UpdateRepoConfigCache(repo.Path, cfg)
+			fmt.Println("[OK] Collaborator added.")
+
+		case "3":
+			fmt.Print("Enter username to remove: ")
+			username := readLine(reader)
+			// For removal, we need to remove the section from git config
+			var physicalPath string
+			if repo.OwnerType == "user" {
+				physicalPath = filepath.Join(repoRoot, repo.Path)
+			} else {
+				physicalPath = filepath.Join(repoRoot, "organizations", repo.Path)
+			}
+			
+			// Note: shell.SetRepoMetadata uses git config, but we need section removal.
+			// I'll use a raw command for now or update manager.go.
+			configPath := filepath.Join(physicalPath, "config")
+			cmd := exec.Command("git", "config", "-f", configPath, "--remove-section", "sourcevault.access."+username)
+			_ = cmd.Run()
+
+			// Sync back to DB cache
+			cfg, _ := shell.ReadFullSourceVaultConfig(physicalPath)
+			_ = database.UpdateRepoConfigCache(repo.Path, cfg)
+			fmt.Println("[OK] Collaborator removed from Git config and DB cache.")
+		case "4":
+			return
+		}
+	}
+}
+
+func runOrgMenu(database *db.DB, reader *bufio.Reader, repoRoot string) {
+	for {
+		fmt.Println("\n--- Organization Management ---")
+		fmt.Println("1. List Organizations")
+		fmt.Println("2. Create Organization")
+		fmt.Println("3. Delete Organization")
+		fmt.Println("4. Manage Org Members")
+		fmt.Println("5. Manage Org Repos")
+		fmt.Println("6. Back to Main Menu")
+		fmt.Print("\n(orgs) ==> ")
+
+		choice := readLine(reader)
+		switch choice {
+		case "1":
+			listOrgs(database)
+		case "2":
+			addOrg(database, reader, repoRoot)
+		case "3":
+			removeOrg(database, reader)
+		case "4":
+			manageOrgMembers(database, reader, repoRoot)
+		case "5":
+			fmt.Print("Enter organization name: ")
+			orgName := readLine(reader)
+			org, err := database.GetOrgByName(orgName)
+			if err != nil || org == nil {
+				fmt.Printf("[ERROR] Organization %q not found.\n", orgName)
+				continue
+			}
+			runOrgRepoMenu(database, reader, org.ID, org.Name, repoRoot)
+		case "6":
+			return
+		}
+	}
+}
+
+func listOrgs(database *db.DB) {
+	orgs, err := database.ListOrgs()
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+	fmt.Println("\nOrganizations:")
+	fmt.Printf("  %-20s  %-36s  %s\n", "Name", "UUID", "Description")
+	fmt.Println("  " + strings.Repeat("─", 80))
+	for _, o := range orgs {
+		desc := o.Description
+		if desc == "" {
+			desc = "(no description)"
+		}
+		fmt.Printf("  %-20s  %-36s  %s\n", o.Name, o.UUID, desc)
+	}
+}
+
+func addOrg(database *db.DB, reader *bufio.Reader, repoRoot string) {
+	fmt.Print("Enter organization name: ")
+	name := readLine(reader)
+	if !db.IsValidUsername(name) {
+		fmt.Println("[ERROR] Invalid organization name.")
+		return
+	}
+
+	orgUUID := uuid.New().String()
+	fmt.Printf("Generated UUID: %s\n", orgUUID)
+
+	fmt.Print("Enter organization description: ")
+	description := readLine(reader)
+
+	org, err := database.CreateOrg(name, orgUUID, description)
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+
+	if repoRoot != "" {
+		if err := database.SaveOrgMetadata(repoRoot, name); err != nil {
+			fmt.Printf("[WARNING] DB updated but filesystem sync failed: %v\n", err)
+		}
+	}
+
+	fmt.Printf("Organization %q created successfully.\n", org.Name)
+}
+
+func removeOrg(database *db.DB, reader *bufio.Reader) {
+	fmt.Print("Enter organization name to REMOVE: ")
+	name := readLine(reader)
+	if name == "" {
+		return
+	}
+
+	fmt.Printf("Are you sure you want to delete org %q? [y/N]: ", name)
+	confirm := readLine(reader)
+	if strings.ToLower(confirm) != "y" {
+		fmt.Println("[CANCELLED]")
+		return
+	}
+
+	if err := database.DeleteOrg(name); err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+	fmt.Println("Organization removed from database. Repositories on disk were NOT deleted.")
+}
+
+func manageOrgMembers(database *db.DB, reader *bufio.Reader, repoRoot string) {
+	fmt.Print("Enter organization name: ")
+	orgName := readLine(reader)
+	org, err := database.GetOrgByName(orgName)
+	if err != nil || org == nil {
+		fmt.Printf("[ERROR] Organization %q not found.\n", orgName)
+		return
+	}
+
+	for {
+		members, err := database.ListOrgMembers(org.ID)
+		if err != nil {
+			fmt.Printf("[ERROR] %v\n", err)
+			return
+		}
+
+		fmt.Printf("\nMembers of %q:\n", org.Name)
+		for _, m := range members {
+			fmt.Printf(" - %-20s (%s)\n", m.Username, m.Role)
+		}
+
+		fmt.Println("\n1. Add Member")
+		fmt.Println("2. Remove Member")
+		fmt.Println("3. Back")
+		fmt.Print("\n(members) ==> ")
+
+		choice := readLine(reader)
+		switch choice {
+		case "1":
+			fmt.Print("Enter username to add: ")
+			username := readLine(reader)
+			user, err := database.GetUserByUsername(username)
+			if err != nil || user == nil {
+				fmt.Printf("[ERROR] User %q not found.\n", username)
+				continue
+			}
+
+			fmt.Print("Role (owner/member) [member]: ")
+			role := readLine(reader)
+			if role == "" {
+				role = "member"
+			}
+
+			if err := database.AddMemberToOrg(org.ID, user.ID, role); err != nil {
+				fmt.Printf("[ERROR] %v\n", err)
+			} else {
+				fmt.Println("Member added.")
+				if repoRoot != "" {
+					database.SaveOrgMetadata(repoRoot, org.Name)
+				}
+			}
+		case "2":
+			fmt.Print("Enter username to remove: ")
+			username := readLine(reader)
+			user, err := database.GetUserByUsername(username)
+			if err != nil || user == nil {
+				fmt.Printf("[ERROR] User %q not found.\n", username)
+				continue
+			}
+
+			if err := database.RemoveMemberFromOrg(org.ID, user.ID); err != nil {
+				fmt.Printf("[ERROR] %v\n", err)
+			} else {
+				fmt.Println("Member removed.")
+				if repoRoot != "" {
+					database.SaveOrgMetadata(repoRoot, org.Name)
+				}
+			}
+		case "3":
+			return
+		}
+	}
 }

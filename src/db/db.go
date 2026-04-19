@@ -81,6 +81,44 @@ type TrustedCA struct {
 	CreatedAt   string
 }
 
+// Organization represents a group of users that own repositories.
+type Organization struct {
+	ID          int64
+	Name        string
+	UUID        string
+	Description string
+	YAMLCache   string
+	CreatedAt   string
+}
+
+// OrgMember represents a user's membership in an organization.
+type OrgMember struct {
+	OrgID    int64
+	UserID   int64
+	Username string // Joined from users table
+	OrgName  string // Joined from organizations table
+	Role     string // owner, admin, member
+}
+
+// Repository represents a Git repository.
+type Repository struct {
+	ID          int64
+	Name        string
+	OwnerType   string // user or org
+	OwnerID     int64
+	Path        string // e.g. 'user/alice/project.git'
+	Description string
+	ConfigCache string
+	IsPublic    bool
+	CreatedAt   string
+}
+
+// AccessibleRepo includes the user's role for a specific repository.
+type AccessibleRepo struct {
+	Repository
+	UserRole string // owner, read, write, member
+}
+
 // DB wraps the SQLite connection and exposes domain-level operations.
 type DB struct {
 	conn *sql.DB
@@ -149,6 +187,41 @@ func (d *DB) migrate() error {
 			key_data    TEXT    NOT NULL,
 			is_admin    INTEGER NOT NULL DEFAULT 0,
 			created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS organizations (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT    NOT NULL UNIQUE,
+			uuid        TEXT    NOT NULL UNIQUE,
+			description TEXT    NOT NULL DEFAULT '',
+			yaml_cache  TEXT    NOT NULL DEFAULT '',
+			created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS org_members (
+			org_id      INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+			user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			role        TEXT    NOT NULL DEFAULT 'member',
+			PRIMARY KEY (org_id, user_id)
+		);
+
+		CREATE TABLE IF NOT EXISTS repositories (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			name        TEXT    NOT NULL,
+			owner_type  TEXT    NOT NULL, -- 'user' or 'org'
+			owner_id    INTEGER NOT NULL,
+			path        TEXT    NOT NULL UNIQUE,
+			description TEXT    NOT NULL DEFAULT '',
+			config_cache TEXT   NOT NULL DEFAULT '',
+			is_public   INTEGER NOT NULL DEFAULT 0,
+			created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS repo_collaborators (
+			repo_id     INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+			user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			role        TEXT    NOT NULL DEFAULT 'read',
+			PRIMARY KEY (repo_id, user_id)
 		);
 	`)
 	return err
@@ -442,4 +515,261 @@ func (d *DB) LookupCAByFingerprint(fingerprint string) (*TrustedCA, error) {
 func (d *DB) RemoveTrustedCA(name string) error {
 	_, err := d.conn.Exec(`DELETE FROM trusted_cas WHERE name = ?`, name)
 	return err
+}
+
+// ---------------------------------------------------------------------------
+// Organization operations
+// ---------------------------------------------------------------------------
+
+// CreateOrg creates a new organization.
+func (d *DB) CreateOrg(name, uuid, description string) (*Organization, error) {
+	res, err := d.conn.Exec(
+		`INSERT INTO organizations (name, uuid, description) VALUES (?, ?, ?)`,
+		name, uuid, description,
+	)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &Organization{ID: id, Name: name, UUID: uuid, Description: description}, nil
+}
+
+// UpdateOrgCache stores the raw YAML metadata in the database.
+func (d *DB) UpdateOrgCache(name, yaml string) error {
+	_, err := d.conn.Exec(`UPDATE organizations SET yaml_cache = ? WHERE name = ?`, yaml, name)
+	return err
+}
+
+// GetOrgByName fetches an organization by its name.
+func (d *DB) GetOrgByName(name string) (*Organization, error) {
+	var o Organization
+	err := d.conn.QueryRow(
+		`SELECT id, name, uuid, description, yaml_cache, created_at FROM organizations WHERE name = ?`, name,
+	).Scan(&o.ID, &o.Name, &o.UUID, &o.Description, &o.YAMLCache, &o.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
+// ListOrgs returns all organizations ordered alphabetically.
+func (d *DB) ListOrgs() ([]Organization, error) {
+	rows, err := d.conn.Query(`SELECT id, name, uuid, description, yaml_cache, created_at FROM organizations ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var orgs []Organization
+	for rows.Next() {
+		var o Organization
+		if err := rows.Scan(&o.ID, &o.Name, &o.UUID, &o.Description, &o.YAMLCache, &o.CreatedAt); err != nil {
+			return nil, err
+		}
+		orgs = append(orgs, o)
+	}
+	return orgs, nil
+}
+
+// DeleteOrg removes an organization.
+func (d *DB) DeleteOrg(name string) error {
+	_, err := d.conn.Exec(`DELETE FROM organizations WHERE name = ?`, name)
+	return err
+}
+
+// AddMemberToOrg registers a user as a member of an organization.
+func (d *DB) AddMemberToOrg(orgID, userID int64, role string) error {
+	_, err := d.conn.Exec(
+		`INSERT INTO org_members (org_id, user_id, role) VALUES (?, ?, ?)`,
+		orgID, userID, role,
+	)
+	return err
+}
+
+// RemoveMemberFromOrg removes a user from an organization.
+func (d *DB) RemoveMemberFromOrg(orgID, userID int64) error {
+	_, err := d.conn.Exec(`DELETE FROM org_members WHERE org_id = ? AND user_id = ?`, orgID, userID)
+	return err
+}
+
+// ListOrgMembers returns all members of an organization.
+func (d *DB) ListOrgMembers(orgID int64) ([]OrgMember, error) {
+	rows, err := d.conn.Query(`
+		SELECT m.org_id, m.user_id, u.username, o.name, m.role
+		FROM org_members m
+		JOIN users u ON m.user_id = u.id
+		JOIN organizations o ON m.org_id = o.id
+		WHERE m.org_id = ?
+		ORDER BY m.role DESC, u.username ASC
+	`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var members []OrgMember
+	for rows.Next() {
+		var m OrgMember
+		if err := rows.Scan(&m.OrgID, &m.UserID, &m.Username, &m.OrgName, &m.Role); err != nil {
+			return nil, err
+		}
+		members = append(members, m)
+	}
+	return members, nil
+}
+
+// IsMemberOfOrg checks if a user is a member of an organization.
+func (d *DB) IsMemberOfOrg(username, orgName string) (bool, error) {
+	var count int
+	err := d.conn.QueryRow(`
+		SELECT COUNT(*)
+		FROM org_members m
+		JOIN users u ON m.user_id = u.id
+		JOIN organizations o ON m.org_id = o.id
+		WHERE u.username = ? AND o.name = ?
+	`, username, orgName).Scan(&count)
+	return count > 0, err
+}
+
+// ---------------------------------------------------------------------------
+// Repository operations
+// ---------------------------------------------------------------------------
+
+// CreateRepo registers a new repository in the database.
+func (d *DB) CreateRepo(name, ownerType string, ownerID int64, path, description string, isPublic bool) (*Repository, error) {
+	public := 0
+	if isPublic {
+		public = 1
+	}
+	res, err := d.conn.Exec(
+		`INSERT INTO repositories (name, owner_type, owner_id, path, description, is_public) VALUES (?, ?, ?, ?, ?, ?)`,
+		name, ownerType, ownerID, path, description, public,
+	)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &Repository{ID: id, Name: name, OwnerType: ownerType, OwnerID: ownerID, Path: path, Description: description, IsPublic: isPublic}, nil
+}
+
+// GetRepoByPath fetches a repository by its logical path.
+func (d *DB) GetRepoByPath(path string) (*Repository, error) {
+	var r Repository
+	var public int
+	err := d.conn.QueryRow(
+		`SELECT id, name, owner_type, owner_id, path, description, config_cache, is_public, created_at FROM repositories WHERE path = ?`, path,
+	).Scan(&r.ID, &r.Name, &r.OwnerType, &r.OwnerID, &r.Path, &r.Description, &r.ConfigCache, &public, &r.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	r.IsPublic = public == 1
+	return &r, nil
+}
+
+// UpdateRepoConfigCache stores the raw Git config metadata in the database.
+func (d *DB) UpdateRepoConfigCache(path, config string) error {
+	_, err := d.conn.Exec(`UPDATE repositories SET config_cache = ? WHERE path = ?`, config, path)
+	return err
+}
+
+// ListReposByOwner returns all repositories for a given owner.
+func (d *DB) ListReposByOwner(ownerType string, ownerID int64) ([]Repository, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, name, owner_type, owner_id, path, description, config_cache, is_public, created_at FROM repositories WHERE owner_type = ? AND owner_id = ? ORDER BY name`,
+		ownerType, ownerID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var repos []Repository
+	for rows.Next() {
+		var r Repository
+		var public int
+		if err := rows.Scan(&r.ID, &r.Name, &r.OwnerType, &r.OwnerID, &r.Path, &r.Description, &r.ConfigCache, &public, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		r.IsPublic = public == 1
+		repos = append(repos, r)
+	}
+	return repos, nil
+}
+
+// DeleteRepo removes a repository from the database.
+func (d *DB) DeleteRepo(path string) error {
+	_, err := d.conn.Exec(`DELETE FROM repositories WHERE path = ?`, path)
+	return err
+}
+
+// AddCollaborator adds a user to a repository with a specific role.
+func (d *DB) AddCollaborator(repoID, userID int64, role string) error {
+	_, err := d.conn.Exec(`INSERT OR REPLACE INTO repo_collaborators (repo_id, user_id, role) VALUES (?, ?, ?)`, repoID, userID, role)
+	return err
+}
+
+// IsCollaborator checks if a user has access to a repository.
+func (d *DB) IsCollaborator(userID, repoID int64) (bool, error) {
+	var count int
+	err := d.conn.QueryRow(`SELECT COUNT(*) FROM repo_collaborators WHERE repo_id = ? AND user_id = ?`, repoID, userID).Scan(&count)
+	return count > 0, err
+}
+
+// ListAccessibleRepos returns all repositories a user has at least read access to.
+func (d *DB) ListAccessibleRepos(username string) ([]AccessibleRepo, error) {
+	query := `
+		-- 1. Repositories owned by the user
+		SELECT r.id, r.name, r.owner_type, r.owner_id, r.path, r.description, r.config_cache, r.is_public, r.created_at, 'owner' as user_role
+		FROM repositories r
+		JOIN users u ON r.owner_id = u.id AND r.owner_type = 'user'
+		WHERE u.username = ?
+
+		UNION
+
+		-- 2. Repositories where the user is an explicit collaborator
+		SELECT r.id, r.name, r.owner_type, r.owner_id, r.path, r.description, r.config_cache, r.is_public, r.created_at, c.role as user_role
+		FROM repositories r
+		JOIN repo_collaborators c ON r.id = c.repo_id
+		JOIN users u ON c.user_id = u.id
+		WHERE u.username = ?
+
+		UNION
+
+		-- 3. Repositories belonging to organizations the user is a member of
+		SELECT r.id, r.name, r.owner_type, r.owner_id, r.path, r.description, r.config_cache, r.is_public, r.created_at, 'member' as user_role
+		FROM repositories r
+		JOIN organizations o ON r.owner_id = o.id AND r.owner_type = 'org'
+		JOIN org_members m ON o.id = m.org_id
+		JOIN users u ON m.user_id = u.id
+		WHERE u.username = ?
+		
+		ORDER BY path ASC
+	`
+
+	rows, err := d.conn.Query(query, username, username, username)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var repos []AccessibleRepo
+	for rows.Next() {
+		var r AccessibleRepo
+		var public int
+		err := rows.Scan(
+			&r.ID, &r.Name, &r.OwnerType, &r.OwnerID, &r.Path, &r.Description, &r.ConfigCache, &public, &r.CreatedAt, &r.UserRole,
+		)
+		if err != nil {
+			return nil, err
+		}
+		r.IsPublic = public == 1
+		repos = append(repos, r)
+	}
+	return repos, nil
 }

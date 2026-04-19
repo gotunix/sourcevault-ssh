@@ -124,6 +124,28 @@ func main() {
 	}
 
 	// ------------------------------------------------------------------
+	// Mode 0b: Sync — sv-shell --sync
+	// ------------------------------------------------------------------
+	// Synchronizes organization metadata from the filesystem into the database.
+	// This is the "Recovery" path if the database is lost.
+	if len(os.Args) == 2 && os.Args[1] == "--sync" {
+		database, err := openDB(dbDir)
+		if err != nil {
+			log.Printf("[sync] FATAL: could not open db: %v", err)
+			os.Exit(1)
+		}
+		defer database.Close()
+
+		log.Printf("[sync] starting filesystem sync from %s...", repoRoot)
+		if err := database.SyncFromFilesystem(repoRoot); err != nil {
+			log.Printf("[sync] ERROR: %v", err)
+			os.Exit(1)
+		}
+		log.Printf("[sync] sync complete")
+		os.Exit(0)
+	}
+
+	// ------------------------------------------------------------------
 	// Mode 1: AuthorizedKeysCommand — sv-shell --keys <fingerprint>
 	// ------------------------------------------------------------------
 	// sshd calls this before authenticating. We must respond quickly with
@@ -151,6 +173,15 @@ func main() {
 	origCmd := os.Getenv("SSH_ORIGINAL_COMMAND")
 	if origCmd != "" {
 		fmt.Fprintf(os.Stderr, "SourceVault SSH v%s\n", version.Version)
+
+		database, err := openDB(dbDir)
+		if err != nil {
+			log.Printf("Internal error: could not open database: %v", err)
+			fmt.Fprintf(os.Stderr, "Forbidden: internal error.\n")
+			os.Exit(1)
+		}
+		defer database.Close()
+
 		gitUser := os.Getenv("GIT_USER")
 		isAdmin := os.Getenv("GIT_ADMIN") == "true"
 
@@ -158,14 +189,6 @@ func main() {
 		// that bypassed the resolver but is exposed via SSH_USER_AUTH.
 		authFile := os.Getenv("SSH_USER_AUTH")
 		if gitUser == "" && authFile != "" {
-			database, err := openDB(dbDir)
-			if err != nil {
-				log.Printf("Internal error: could not open database for cert resolution: %v", err)
-				fmt.Fprintf(os.Stderr, "Forbidden: internal error.\n")
-				os.Exit(1)
-			}
-			defer database.Close()
-
 			var resolveErr error
 			gitUser, isAdmin, resolveErr = auth.ResolveFromAuthInfo(authFile, database)
 			if resolveErr != nil {
@@ -183,7 +206,7 @@ func main() {
 			os.Exit(1)
 		}
 
-		shell.Proxy(repoRoot, gitUser, isAdmin, origCmd)
+		shell.Proxy(database, repoRoot, gitUser, isAdmin, origCmd)
 		return
 	}
 

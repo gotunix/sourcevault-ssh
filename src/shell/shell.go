@@ -49,6 +49,8 @@ import (
 	"strings"
 	"syscall"
 	"unicode"
+
+	"github.com/gotunix/sourcevault-ssh/db"
 )
 
 // allowedBinaries is the strict whitelist of git wire-protocol executables.
@@ -142,7 +144,7 @@ func sanitizeCommand(cmdStr string) (executable, repoPath string, err error) {
 //   - gitUser:  the internal username authenticated via SSH key lookup
 //   - isAdmin:  whether the user has admin privileges (bypasses namespace check)
 //   - origCmd:  the raw SSH_ORIGINAL_COMMAND string
-func Proxy(repoRoot, gitUser string, isAdmin bool, origCmd string) {
+func Proxy(database *db.DB, repoRoot, gitUser string, isAdmin bool, origCmd string) {
 	executable, repoPath, err := sanitizeCommand(origCmd)
 	if err != nil {
 		log.Printf("Command rejected for user %q: %v", gitUser, err)
@@ -150,35 +152,53 @@ func Proxy(repoRoot, gitUser string, isAdmin bool, origCmd string) {
 		os.Exit(1)
 	}
 
-	// Access control — non-admin users are restricted to their own namespace.
+	// Access control for repositories.
 	//
 	// Convention:
-	//   users/<username>/...  — personal repos, owned exclusively by <username>
-	//   <org>/...             — organisation repos (access control TBD in future phase)
+	//   user/<username>/...  — personal repos
+	//   <org>/...             — organisation repos
 	//
-	// FUTURE: Organisation-level membership and repo-level ACLs will be added here.
-	if !isAdmin && strings.HasPrefix(repoPath, "users/") {
+	var absoluteRepoPath string
+	if strings.HasPrefix(repoPath, "user/") {
 		parts := strings.SplitN(repoPath, "/", 3)
-		if len(parts) >= 2 && parts[1] != gitUser {
+		if len(parts) >= 2 && parts[1] != gitUser && !isAdmin {
 			log.Printf("Access denied: user %q attempted to access %q", gitUser, repoPath)
 			fmt.Fprintf(os.Stderr, "Access denied: you do not have permission to access %s\n", repoPath)
 			os.Exit(1)
 		}
-	}
-
-	// Map the logical path to an absolute filesystem path under repoRoot.
-	//
-	// Path conventions:
-	//   users/<username>/<repo>.git  →  <repoRoot>/users/<username>/<repo>.git
-	//   <org>/<repo>.git             →  <repoRoot>/organizations/<org>/<repo>.git
-	//
-	// FUTURE API INTEGRATION: In platform mode this can resolve UUID-based paths
-	// or mount points returned by the SourceVault web API.
-	var absoluteRepoPath string
-	if strings.HasPrefix(repoPath, "users/") {
 		absoluteRepoPath = filepath.Join(repoRoot, repoPath)
 	} else {
+		// Organization path
+		parts := strings.SplitN(repoPath, "/", 2)
+		orgName := parts[0]
+		if !isAdmin {
+			member, err := database.IsMemberOfOrg(gitUser, orgName)
+			if err != nil {
+				log.Printf("Internal error checking membership for user %q in org %q: %v", gitUser, orgName, err)
+				fmt.Fprintf(os.Stderr, "Internal error: could not verify permissions.\n")
+				os.Exit(1)
+			}
+			if !member {
+				log.Printf("Access denied: user %q is not a member of organization %q", gitUser, orgName)
+				fmt.Fprintf(os.Stderr, "Access denied: you are not a member of organization %q\n", orgName)
+				os.Exit(1)
+			}
+		}
 		absoluteRepoPath = filepath.Join(repoRoot, "organizations", repoPath)
+	}
+
+	// Verify the repository is registered in the database.
+	// This prevents access to directories on disk that aren't officially "SourceVault Repositories".
+	repo, err := database.GetRepoByPath(repoPath)
+	if err != nil {
+		log.Printf("Error looking up repo %q: %v", repoPath, err)
+		fmt.Fprintf(os.Stderr, "Internal error.\n")
+		os.Exit(1)
+	}
+	if repo == nil && !isAdmin {
+		log.Printf("Access denied: repo %q is not registered in the database", repoPath)
+		fmt.Fprintf(os.Stderr, "Access denied: repository %q does not exist or is not registered.\n", repoPath)
+		os.Exit(1)
 	}
 
 	finalCmd := fmt.Sprintf("%s '%s'", executable, absoluteRepoPath)
