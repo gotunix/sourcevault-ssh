@@ -168,9 +168,15 @@ func main() {
 	}
 
 	// ------------------------------------------------------------------
-	// Mode 2: Git Proxy — SSH_ORIGINAL_COMMAND is set
+	// Mode 2: Git Proxy — SSH_ORIGINAL_COMMAND is set or invoked via -c
 	// ------------------------------------------------------------------
 	origCmd := os.Getenv("SSH_ORIGINAL_COMMAND")
+	// If invoked as a shell (e.g. sv-shell -c "git-upload-pack ..."), 
+	// the command is in the arguments.
+	if origCmd == "" && len(os.Args) >= 3 && os.Args[1] == "-c" {
+		origCmd = os.Args[2]
+	}
+
 	if origCmd != "" {
 		fmt.Fprintf(os.Stderr, "SourceVault SSH v%s\n", version.Version)
 
@@ -213,7 +219,7 @@ func main() {
 	// ------------------------------------------------------------------
 	// Mode 3: Interactive SSH session — no git command was sent
 	// ------------------------------------------------------------------
-	fmt.Printf("%s v%s\n", version.AppName, version.Version)
+	fmt.Fprintf(os.Stderr, "%s v%s\n", version.AppName, version.Version)
 	database, err := openDB(dbDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Internal error: could not open database: %v\n", err)
