@@ -111,7 +111,12 @@ func main() {
 		log.Printf("[bootstrap] admin username: %s", adminUser)
 
 		if err := maybeBootstrap(database, adminUser); err != nil {
-			log.Printf("[bootstrap] ERROR: %v", err)
+			log.Printf("[bootstrap] ERROR (user): %v", err)
+			os.Exit(1)
+		}
+
+		if err := maybeBootstrapCA(database); err != nil {
+			log.Printf("[bootstrap] ERROR (ca): %v", err)
 			os.Exit(1)
 		}
 		os.Exit(0)
@@ -269,5 +274,49 @@ func maybeBootstrap(database *db.DB, adminUser string) error {
 	}
 
 	log.Printf("[bootstrap] SUCCESS — admin user %q created, key registered: %s", adminUser, fingerprint)
+	return nil
+}
+
+// maybeBootstrapCA seeds a trusted CA from BOOTSTRAP_CA_KEY if provided.
+func maybeBootstrapCA(database *db.DB) error {
+	caKey := strings.TrimSpace(os.Getenv("BOOTSTRAP_CA_KEY"))
+	if caKey == "" {
+		log.Printf("[bootstrap] BOOTSTRAP_CA_KEY is not set — skipping")
+		return nil
+	}
+
+	isAdmin := os.Getenv("BOOTSTRAP_CA_IS_ADMIN") == "true"
+	caName := os.Getenv("BOOTSTRAP_CA_NAME")
+	if caName == "" {
+		caName = "InitialCA"
+	}
+
+	log.Printf("[bootstrap] bootstrapping CA: name=%s isAdmin=%v", caName, isAdmin)
+
+	keyType, keyData, _, err := db.ParsePublicKeyLine(caKey)
+	if err != nil {
+		return fmt.Errorf("BOOTSTRAP_CA_KEY is invalid: %w", err)
+	}
+
+	fingerprint, err := db.FingerprintKey(keyData)
+	if err != nil {
+		return fmt.Errorf("computing CA fingerprint: %w", err)
+	}
+
+	// Check if already exists
+	existing, err := database.LookupCAByFingerprint(fingerprint)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		log.Printf("[bootstrap] CA already trusted: %s — skipping", fingerprint)
+		return nil
+	}
+
+	if _, err := database.AddTrustedCA(caName, fingerprint, keyType, keyData, isAdmin); err != nil {
+		return fmt.Errorf("registering bootstrap CA: %w", err)
+	}
+
+	log.Printf("[bootstrap] SUCCESS — CA %q trusted: %s", caName, fingerprint)
 	return nil
 }
