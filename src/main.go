@@ -281,7 +281,7 @@ func maybeBootstrap(database *db.DB, adminUser string) error {
 func maybeBootstrapCA(database *db.DB) error {
 	caKey := strings.TrimSpace(os.Getenv("BOOTSTRAP_CA_KEY"))
 	if caKey == "" {
-		log.Printf("[bootstrap] BOOTSTRAP_CA_KEY is not set — skipping")
+		log.Printf("[bootstrap] BOOTSTRAP_CA_KEY is not set — skipping CA bootstrap")
 		return nil
 	}
 
@@ -291,32 +291,35 @@ func maybeBootstrapCA(database *db.DB) error {
 		caName = "InitialCA"
 	}
 
-	log.Printf("[bootstrap] bootstrapping CA: name=%s isAdmin=%v", caName, isAdmin)
+	log.Printf("[bootstrap] Attempting to trust CA: name=%q isAdmin=%v key_len=%d", caName, isAdmin, len(caKey))
 
 	keyType, keyData, _, err := db.ParsePublicKeyLine(caKey)
 	if err != nil {
-		return fmt.Errorf("BOOTSTRAP_CA_KEY is invalid: %w", err)
+		return fmt.Errorf("BOOTSTRAP_CA_KEY is invalid (could not parse): %w", err)
 	}
 
 	fingerprint, err := db.FingerprintKey(keyData)
 	if err != nil {
-		return fmt.Errorf("computing CA fingerprint: %w", err)
+		return fmt.Errorf("computing CA fingerprint failed: %w", err)
 	}
+
+	log.Printf("[bootstrap] CA fingerprint calculated: %s", fingerprint)
 
 	// Check if already exists
 	existing, err := database.LookupCAByFingerprint(fingerprint)
 	if err != nil {
-		return err
+		return fmt.Errorf("db error checking for existing CA: %w", err)
 	}
 	if existing != nil {
-		log.Printf("[bootstrap] CA already trusted: %s — skipping", fingerprint)
+		log.Printf("[bootstrap] CA already trusted in database: %s — skip registration", fingerprint)
 		return nil
 	}
 
+	log.Printf("[bootstrap] CA not found in DB, registering now...")
 	if _, err := database.AddTrustedCA(caName, fingerprint, keyType, keyData, isAdmin); err != nil {
-		return fmt.Errorf("registering bootstrap CA: %w", err)
+		return fmt.Errorf("registering bootstrap CA into DB failed: %w", err)
 	}
 
-	log.Printf("[bootstrap] SUCCESS — CA %q trusted: %s", caName, fingerprint)
+	log.Printf("[bootstrap] SUCCESS — CA %q is now trusted: %s", caName, fingerprint)
 	return nil
 }

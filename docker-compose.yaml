@@ -34,6 +34,10 @@ services:
       - BOOTSTRAP_ADMIN_KEY=${BOOTSTRAP_ADMIN_KEY}
       # Username for the bootstrap admin — supports email format. Defaults to "admin".
       - BOOTSTRAP_ADMIN_USER=${BOOTSTRAP_ADMIN_USER:-admin}
+      # Trusted CA Bootstrap: allow certificates signed by this CA.
+      - BOOTSTRAP_CA_KEY=${BOOTSTRAP_CA_KEY}
+      - BOOTSTRAP_CA_NAME=${BOOTSTRAP_CA_NAME:-InitialCA}
+      - BOOTSTRAP_CA_IS_ADMIN=${BOOTSTRAP_CA_IS_ADMIN:-false}
     volumes:
       - git-data:/data/git
       - ssh-config:/etc/ssh
