@@ -75,12 +75,12 @@ echo "[entrypoint] Environment file written to $ENV_FILE"
 # Bootstrap: seed the first admin user at startup while env vars are available.
 # gosu drops from root to the git user before running the binary.
 # ---------------------------------------------------------------------------
-if [ -n "$BOOTSTRAP_ADMIN_KEY" ]; then
-    echo "[entrypoint] BOOTSTRAP_ADMIN_KEY is set — running bootstrap as git user"
+if [ -n "$BOOTSTRAP_ADMIN_KEY" ] || [ -n "$BOOTSTRAP_CA_KEY" ]; then
+    echo "[entrypoint] Bootstrap required — running bootstrap as git user"
     gosu git /usr/local/bin/git-shell --bootstrap
     echo "[entrypoint] Bootstrap complete (exit code: $?)"
 else
-    echo "[entrypoint] BOOTSTRAP_ADMIN_KEY not set — skipping bootstrap"
+    echo "[entrypoint] No bootstrap keys provided — skipping bootstrap"
 fi
 
 # ---------------------------------------------------------------------------
