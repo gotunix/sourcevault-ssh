@@ -190,7 +190,7 @@ func main() {
 	// ------------------------------------------------------------------
 	// Mode 3: Interactive SSH session — no git command was sent
 	// ------------------------------------------------------------------
-	version.Print()
+	fmt.Printf("%s v%s\n", version.AppName, version.Version)
 	database, err := openDB(dbDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Internal error: could not open database: %v\n", err)
