@@ -1,6 +1,6 @@
 # SourceVault SSH
 
-> **Secure Git SSH Orchestrator** — a self-contained Docker service that provides managed SSH access to Git repositories with per-user key management, access control, and an interactive admin TUI.
+> **Secure Git SSH Orchestrator** — A modern version of `gitolite-admin`. A self-contained Docker service that provides managed SSH access to Git repositories with per-user key management, access control, and an interactive admin TUI.
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
@@ -8,7 +8,7 @@
 
 ## Overview
 
-SourceVault SSH replaces a static `authorized_keys` file with a SQLite-backed user registry. It sits between OpenSSH and `git-shell`, dynamically resolving connecting SSH keys to internal user accounts and enforcing repository-level access control — all without modifying the underlying NFS-mounted Git data.
+SourceVault SSH is a modern successor to `gitolite-admin`. It replaces a static `authorized_keys` file with a SQLite-backed user registry. It sits between OpenSSH and `git-shell`, dynamically resolving connecting SSH keys to internal user accounts and enforcing repository-level access control — all without modifying the underlying NFS-mounted Git data.
 
 The entire stack is shipped as a single Docker image containing a custom-built OpenSSH (9.8p1) and a Go binary (`sv-shell`) that orchestrates every SSH interaction.
 
@@ -56,7 +56,7 @@ Repositories are accessed using logical paths that are mapped to physical paths 
 | SSH path | Disk path | Purpose |
 |----------|-----------|---------|
 | `users/<username>/<repo>.git` | `$REPO_ROOT/users/<username>/<repo>.git` | Private user repository |
-| `<org>/<repo>.git` | `$REPO_ROOT/<org>/<repo>.git` | Organization / shared repository |
+| `<org>/<repo>.git` | `$REPO_ROOT/orgs/<org>/<repo>.git` | Organization / shared repository |
 
 **Example:**
 ```bash
