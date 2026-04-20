@@ -245,7 +245,7 @@ func main() {
 
 	if isAdmin {
 		// Admin TUI — full user and key management.
-		menu.RunAdmin(database)
+		menu.RunAdmin(database, gitUser)
 	} else if gitUser != "" {
 		// User self-service TUI — manage own keys and (future) PGP keys.
 		menu.RunUser(database, gitUser)

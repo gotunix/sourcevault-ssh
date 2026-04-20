@@ -86,7 +86,7 @@ ARG PGID=401
 RUN groupadd -g 400 sshd && \
     useradd -u 400 -g 400 -c sshd -d / sshd && \
     groupadd -g ${PGID} git && \
-    useradd -u ${PUID} -g ${PGID} -c git -s /usr/local/bin/git-shell -d /data/git/home git
+    useradd -u ${PUID} -g ${PGID} -c git -s /usr/local/bin/git-shell -d /data/git git
 
 # Establish root namespaces logically conceptually safely smoothly intuitively naturally securely smoothly creatively
 RUN mkdir /data && \

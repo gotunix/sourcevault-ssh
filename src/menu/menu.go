@@ -53,7 +53,7 @@ import (
 
 // RunAdmin presents the full admin TUI. It blocks until the admin exits.
 // Only users with GIT_ADMIN=true reach this path.
-func RunAdmin(database *db.DB) {
+func RunAdmin(database *db.DB, currentUser string) {
 	reader := bufio.NewReader(os.Stdin)
 	repoRoot := os.Getenv("GIT_SHELL_REPO_ROOT")
 	if repoRoot == "" {
@@ -106,7 +106,7 @@ func RunAdmin(database *db.DB) {
 		case "10":
 			removeCA(database, reader)
 		case "11":
-			runOrgMenu(database, reader, repoRoot)
+			runOrgMenu(database, reader, repoRoot, currentUser)
 		case "12":
 			version.Print()
 		case "13":
@@ -860,7 +860,7 @@ func manageCollaborators(database *db.DB, reader *bufio.Reader, repoRoot string)
 	}
 }
 
-func runOrgMenu(database *db.DB, reader *bufio.Reader, repoRoot string) {
+func runOrgMenu(database *db.DB, reader *bufio.Reader, repoRoot, currentUser string) {
 	for {
 		fmt.Println("\n--- Organization Management ---")
 		fmt.Println("1. List Organizations")
@@ -876,7 +876,7 @@ func runOrgMenu(database *db.DB, reader *bufio.Reader, repoRoot string) {
 		case "1":
 			listOrgs(database)
 		case "2":
-			addOrg(database, reader, repoRoot)
+			addOrg(database, reader, repoRoot, currentUser)
 		case "3":
 			removeOrg(database, reader)
 		case "4":
@@ -914,7 +914,7 @@ func listOrgs(database *db.DB) {
 	}
 }
 
-func addOrg(database *db.DB, reader *bufio.Reader, repoRoot string) {
+func addOrg(database *db.DB, reader *bufio.Reader, repoRoot, currentUser string) {
 	fmt.Print("Enter organization name: ")
 	name := readLine(reader)
 	if !db.IsValidUsername(name) {
@@ -932,6 +932,13 @@ func addOrg(database *db.DB, reader *bufio.Reader, repoRoot string) {
 	if err != nil {
 		fmt.Printf("[ERROR] %v\n", err)
 		return
+	}
+
+	// Automatically add the creator as the owner
+	user, err := database.GetUserByUsername(currentUser)
+	if err == nil && user != nil {
+		_ = database.AddMemberToOrg(org.ID, user.ID, "owner")
+		fmt.Printf("Added %q as organization owner.\n", currentUser)
 	}
 
 	if repoRoot != "" {
