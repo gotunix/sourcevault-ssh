@@ -150,8 +150,11 @@ func RunUser(database *db.DB, username string) {
 		fmt.Println("  3. Remove SSH Key")
 		fmt.Println("  4. Manage My Repositories")
 		fmt.Println("  5. List All Accessible Repositories")
-		fmt.Println("  6. Version")
-		fmt.Println("  7. Exit")
+		fmt.Println("  6. List My GPG Keys")
+		fmt.Println("  7. Import GPG Key")
+		fmt.Println("  8. Remove GPG Key")
+		fmt.Println("  9. Version")
+		fmt.Println(" 10. Exit")
 		fmt.Print("\n==> ")
 
 		choice := readLine(reader)
@@ -168,8 +171,14 @@ func RunUser(database *db.DB, username string) {
 		case "5":
 			listAccessibleRepos(database, username)
 		case "6":
-			version.Print()
+			listGPGKeysForUserID(database, user.ID, username)
 		case "7":
+			addGPGKeyForUser(database, reader, user)
+		case "8":
+			removeGPGKeyForUser(database, reader, user)
+		case "9":
+			version.Print()
+		case "10":
 			fmt.Println("Goodbye.")
 			return
 		default:
@@ -511,6 +520,117 @@ func removeKeyForUser(database *db.DB, reader *bufio.Reader, user *db.User) {
 		return
 	}
 	fmt.Printf("  [OK] Key %s removed.\n", fingerprint)
+}
+
+// ---------------------------------------------------------------------------
+// User GPG self-service helpers
+// ---------------------------------------------------------------------------
+
+func listGPGKeysForUserID(database *db.DB, userID int64, username string) {
+	keys, err := database.ListGPGKeysForUser(userID)
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+	if len(keys) == 0 {
+		fmt.Printf("  (no GPG keys registered for your account)\n")
+		return
+	}
+	fmt.Printf("\n  Your GPG Keys (%s):\n", username)
+	fmt.Println("  " + strings.Repeat("─", 70))
+	for i, k := range keys {
+		comment := k.Comment
+		if comment == "" {
+			comment = "(no comment)"
+		}
+		fmt.Printf("  [%d]  %s\n       %s\n", i+1, k.Fingerprint, comment)
+	}
+}
+
+func addGPGKeyForUser(database *db.DB, reader *bufio.Reader, user *db.User) {
+	fmt.Println("  Paste your ASCII armored GPG public key block:")
+	fmt.Print("  > ")
+
+	var keyData strings.Builder
+	for {
+		line, err := reader.ReadString('\n')
+		keyData.WriteString(line)
+		
+		if strings.Contains(line, "-----END PGP PUBLIC KEY BLOCK-----") {
+			break
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	dataBlock := strings.TrimSpace(keyData.String())
+	if dataBlock == "" || !strings.Contains(dataBlock, "-----BEGIN PGP PUBLIC KEY BLOCK-----") {
+		fmt.Println("  [CANCELLED] Invalid block.")
+		return
+	}
+
+	fingerprint, err := shell.ImportGPGKey(dataBlock)
+	if err != nil {
+		fmt.Printf("  [ERROR] %v\n", err)
+		return
+	}
+
+	if err := shell.TrustGPGKey(fingerprint); err != nil {
+		fmt.Printf("  [ERROR] %v\n", err)
+		_ = shell.DeleteGPGKey(fingerprint)
+		return
+	}
+
+	comment := "Imported GPG Key"
+
+	if _, err := database.AddGPGKey(user.ID, fingerprint, dataBlock, comment); err != nil {
+		fmt.Printf("  [ERROR] Could not add key to DB (already registered?): %v\n", err)
+		return
+	}
+
+	fmt.Printf("  [OK] GPG Key imported and trusted.\n  Fingerprint: %s\n", fingerprint)
+}
+
+func removeGPGKeyForUser(database *db.DB, reader *bufio.Reader, user *db.User) {
+	fingerprint := prompt(reader, "GPG Key fingerprint to remove: ")
+	if fingerprint == "" {
+		fmt.Println("  [CANCELLED]")
+		return
+	}
+
+	fingerprint = strings.ReplaceAll(fingerprint, " ", "")
+
+	key, err := database.LookupGPGKeyByFingerprint(fingerprint)
+	if err != nil {
+		fmt.Printf("  [ERROR] %v\n", err)
+		return
+	}
+	if key == nil {
+		fmt.Println("  [ERROR] No GPG key with that fingerprint found in DB.")
+		return
+	}
+
+	if key.UserID != user.ID {
+		fmt.Println("  [DENIED] That key does not belong to your account.")
+		return
+	}
+
+	confirm := prompt(reader, fmt.Sprintf("Remove GPG key %s? (yes/no): ", fingerprint))
+	if strings.ToLower(confirm) != "yes" {
+		fmt.Println("  [CANCELLED]")
+		return
+	}
+
+	if err := database.RemoveGPGKeyByFingerprint(fingerprint); err != nil {
+		fmt.Printf("  [ERROR] Failed to remove from DB: %v\n", err)
+		return
+	}
+	if err := shell.DeleteGPGKey(fingerprint); err != nil {
+		fmt.Printf("  [WARNING] Removed from DB, but keyring deletion failed: %v\n", err)
+	}
+
+	fmt.Printf("  [OK] GPG Key %s removed.\n", fingerprint)
 }
 
 // ---------------------------------------------------------------------------

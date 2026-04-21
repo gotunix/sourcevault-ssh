@@ -70,6 +70,17 @@ type SSHKey struct {
 	CreatedAt   string
 }
 
+// GPGKey represents a trusted PGP/GPG key registered to a user for commit signing.
+type GPGKey struct {
+	ID          int64
+	UserID      int64
+	Username    string
+	Fingerprint string
+	KeyData     string // Armored block
+	Comment     string
+	CreatedAt   string
+}
+
 // TrustedCA represents a Certificate Authority public key trusted by the system.
 type TrustedCA struct {
 	ID          int64
@@ -174,6 +185,15 @@ func (d *DB) migrate() error {
 			user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
 			fingerprint TEXT    NOT NULL UNIQUE,
 			key_type    TEXT    NOT NULL,
+			key_data    TEXT    NOT NULL,
+			comment     TEXT    NOT NULL DEFAULT '',
+			created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+		);
+
+		CREATE TABLE IF NOT EXISTS gpg_keys (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			fingerprint TEXT    NOT NULL UNIQUE,
 			key_data    TEXT    NOT NULL,
 			comment     TEXT    NOT NULL DEFAULT '',
 			created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -772,4 +792,72 @@ func (d *DB) ListAccessibleRepos(username string) ([]AccessibleRepo, error) {
 		repos = append(repos, r)
 	}
 	return repos, nil
+}
+
+// ---------------------------------------------------------------------------
+// GPG key operations
+// ---------------------------------------------------------------------------
+
+// AddGPGKey registers a new GPG public key for a user.
+func (d *DB) AddGPGKey(userID int64, fingerprint, keyData, comment string) (*GPGKey, error) {
+	res, err := d.conn.Exec(
+		`INSERT INTO gpg_keys (user_id, fingerprint, key_data, comment) VALUES (?, ?, ?, ?)`,
+		userID, fingerprint, keyData, comment,
+	)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &GPGKey{
+		ID: id, UserID: userID, Fingerprint: fingerprint,
+		KeyData: keyData, Comment: comment,
+	}, nil
+}
+
+// LookupGPGKeyByFingerprint finds a GPG key and its owner by varying formats of fingerprint.
+func (d *DB) LookupGPGKeyByFingerprint(fingerprint string) (*GPGKey, error) {
+	var k GPGKey
+	err := d.conn.QueryRow(`
+		SELECT k.id, k.user_id, u.username, k.fingerprint, k.key_data, k.comment, k.created_at
+		FROM gpg_keys k JOIN users u ON k.user_id = u.id
+		WHERE k.fingerprint = ?
+	`, fingerprint).Scan(
+		&k.ID, &k.UserID, &k.Username, &k.Fingerprint,
+		&k.KeyData, &k.Comment, &k.CreatedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &k, nil
+}
+
+// ListGPGKeysForUser returns all GPG keys registered to a specific user.
+func (d *DB) ListGPGKeysForUser(userID int64) ([]GPGKey, error) {
+	rows, err := d.conn.Query(`
+		SELECT id, user_id, fingerprint, key_data, comment, created_at
+		FROM gpg_keys WHERE user_id = ? ORDER BY created_at
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var keys []GPGKey
+	for rows.Next() {
+		var k GPGKey
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Fingerprint, &k.KeyData, &k.Comment, &k.CreatedAt); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
+// RemoveGPGKeyByFingerprint deletes a GPG key by its fingerprint.
+func (d *DB) RemoveGPGKeyByFingerprint(fingerprint string) error {
+	_, err := d.conn.Exec(`DELETE FROM gpg_keys WHERE fingerprint = ?`, fingerprint)
+	return err
 }
