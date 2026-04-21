@@ -83,11 +83,15 @@ func ReadFullSourceVaultConfig(absPath string) (string, error) {
 
 // LogRepoCommitsGPG returns the last 15 commits formatted with GPG verification status.
 func LogRepoCommitsGPG(absPath string) (string, error) {
-	cmd := exec.Command("git", "log", "-n", "15", "--pretty=format:%h | %G? | %an | %s")
+	cmd := exec.Command("git", "log", "--all", "-n", "15", "--pretty=format:%h | %G? | %an | %s")
 	cmd.Dir = absPath
 	output, err := cmd.CombinedOutput()
+	outStr := strings.TrimSpace(string(output))
 	if err != nil {
-		return "", fmt.Errorf("failed to read commits (is the repository empty?): %v", strings.TrimSpace(string(output)))
+		if strings.Contains(outStr, "does not have any commits yet") {
+			return "", nil // Properly handle completely empty repos by returning an empty string
+		}
+		return "", fmt.Errorf("failed to read commits: %v", outStr)
 	}
-	return string(output), nil
+	return outStr, nil
 }
