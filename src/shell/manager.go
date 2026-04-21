@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // InitBareRepo initializes a new bare Git repository at the specified absolute path.
