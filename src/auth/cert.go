@@ -26,7 +26,7 @@ import (
 
 // ResolveFromAuthInfo parses the OpenSSH authentication info file (ExposeAuthInfo)
 // and returns the identity found in a valid, trusted SSH certificate.
-func ResolveFromAuthInfo(authInfoPath string, database *db.DB) (string, bool, error) {
+func ResolveFromAuthInfo(authInfoPath string, database *db.DB, repoRoot string) (string, bool, error) {
 	file, err := os.Open(authInfoPath)
 	if err != nil {
 		return "", false, fmt.Errorf("could not open auth info file: %w", err)
@@ -105,6 +105,10 @@ func ResolveFromAuthInfo(authInfoPath string, database *db.DB) (string, bool, er
 			if err != nil {
 				return "", false, fmt.Errorf("failed to auto-provision user %q: %w", username, err)
 			}
+			
+			// Persist JIT-created user out to GitOps YAML mapping
+			_ = database.SaveUserMetadata(repoRoot, username)
+
 			fmt.Fprintf(os.Stderr, "[auth] Auto-provisioned new user: %s (isAdmin=%v)\n", username, isAdmin)
 		} else {
 			// If the user already exists, we might want to update their admin status
@@ -113,6 +117,10 @@ func ResolveFromAuthInfo(authInfoPath string, database *db.DB) (string, bool, er
 				if err := database.SetAdmin(username, true); err != nil {
 					return "", false, fmt.Errorf("failed to promote user %q to admin via CA: %w", username, err)
 				}
+				
+				// Persist promotion mapping
+				_ = database.SaveUserMetadata(repoRoot, username)
+
 				fmt.Fprintf(os.Stderr, "[auth] Promoted user %s to admin via CA trust\n", username)
 			}
 		}

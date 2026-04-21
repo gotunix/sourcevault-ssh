@@ -111,7 +111,7 @@ func main() {
 		}
 		log.Printf("[bootstrap] admin username: %s", adminUser)
 
-		if err := maybeBootstrap(database, adminUser); err != nil {
+		if err := maybeBootstrap(database, adminUser, repoRoot); err != nil {
 			log.Printf("[bootstrap] ERROR (user): %v", err)
 			os.Exit(1)
 		}
@@ -196,7 +196,7 @@ func main() {
 		authFile := os.Getenv("SSH_USER_AUTH")
 		if gitUser == "" && authFile != "" {
 			var resolveErr error
-			gitUser, isAdmin, resolveErr = auth.ResolveFromAuthInfo(authFile, database)
+			gitUser, isAdmin, resolveErr = auth.ResolveFromAuthInfo(authFile, database, repoRoot)
 			if resolveErr != nil {
 				log.Printf("Certificate resolution failed: %v", resolveErr)
 				fmt.Fprintf(os.Stderr, "Forbidden: certificate could not be resolved or is untrusted.\n")
@@ -234,7 +234,7 @@ func main() {
 	authFile := os.Getenv("SSH_USER_AUTH")
 	if gitUser == "" && authFile != "" {
 		var resolveErr error
-		gitUser, isAdmin, resolveErr = auth.ResolveFromAuthInfo(authFile, database)
+		gitUser, isAdmin, resolveErr = auth.ResolveFromAuthInfo(authFile, database, repoRoot)
 		if resolveErr != nil {
 			log.Printf("Certificate resolution failed for interactive session: %v", resolveErr)
 			fmt.Fprintf(os.Stderr, "Restricted: identity could not be resolved from certificate.\n")
@@ -264,7 +264,7 @@ func openDB(dbDir string) (*db.DB, error) {
 // maybeBootstrap seeds the first admin user if the database is empty.
 // adminUser is the username to register (typically from BOOTSTRAP_ADMIN_USER).
 // BOOTSTRAP_ADMIN_KEY must contain the full public key line.
-func maybeBootstrap(database *db.DB, adminUser string) error {
+func maybeBootstrap(database *db.DB, adminUser, repoRoot string) error {
 	bootstrapKey := strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_KEY"))
 	if bootstrapKey == "" {
 		log.Printf("[bootstrap] BOOTSTRAP_ADMIN_KEY is not set — skipping")
@@ -304,6 +304,8 @@ func maybeBootstrap(database *db.DB, adminUser string) error {
 	if _, err := database.AddKey(user.ID, fingerprint, keyType, keyData, comment); err != nil {
 		return fmt.Errorf("registering bootstrap admin key: %w", err)
 	}
+
+	_ = database.SaveUserMetadata(repoRoot, adminUser)
 
 	log.Printf("[bootstrap] SUCCESS — admin user %q created, key registered: %s", adminUser, fingerprint)
 	return nil

@@ -53,6 +53,7 @@ import (
 // User represents an internal SourceVault application user.
 type User struct {
 	ID        int64
+	UUID      string
 	Username  string
 	IsAdmin   bool
 	CreatedAt string
@@ -175,6 +176,7 @@ func (d *DB) migrate() error {
 	_, err := d.conn.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			uuid       TEXT    NOT NULL UNIQUE DEFAULT (lower(hex(randomblob(16)))),
 			username   TEXT    NOT NULL UNIQUE,
 			is_admin   INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -244,6 +246,11 @@ func (d *DB) migrate() error {
 			PRIMARY KEY (repo_id, user_id)
 		);
 	`)
+
+	// Inject UUID dynamically into legacy SQLite stores safely
+	d.conn.Exec(`ALTER TABLE users ADD COLUMN uuid TEXT NOT NULL DEFAULT (lower(hex(randomblob(16))))`)
+	d.conn.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_uuid ON users(uuid)`)
+
 	return err
 }
 
@@ -273,7 +280,23 @@ func (d *DB) CreateUser(username string, isAdmin bool) (*User, error) {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	return &User{ID: id, Username: username, IsAdmin: isAdmin}, nil
+	return d.GetUserByUsername(username) // Re-fetch to retrieve the randomly generated UUID mapping
+}
+
+// RestoreUser forces an exact metadata insert mapping to reconstruct a user structurally
+func (d *DB) RestoreUser(id int64, uuid string, username string, isAdmin bool, createdAt string) (*User, error) {
+	admin := 0
+	if isAdmin {
+		admin = 1
+	}
+	_, err := d.conn.Exec(
+		`INSERT INTO users (id, uuid, username, is_admin, created_at) VALUES (?, ?, ?, ?, ?)`,
+		id, uuid, username, admin, createdAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &User{ID: id, UUID: uuid, Username: username, IsAdmin: isAdmin, CreatedAt: createdAt}, nil
 }
 
 // GetUserByUsername fetches a user by their username. Returns nil if not found.
@@ -281,8 +304,8 @@ func (d *DB) GetUserByUsername(username string) (*User, error) {
 	var u User
 	var isAdmin int
 	err := d.conn.QueryRow(
-		`SELECT id, username, is_admin, created_at FROM users WHERE username = ?`, username,
-	).Scan(&u.ID, &u.Username, &isAdmin, &u.CreatedAt)
+		`SELECT id, uuid, username, is_admin, created_at FROM users WHERE username = ?`, username,
+	).Scan(&u.ID, &u.UUID, &u.Username, &isAdmin, &u.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -296,7 +319,7 @@ func (d *DB) GetUserByUsername(username string) (*User, error) {
 // ListUsers returns all users ordered alphabetically.
 func (d *DB) ListUsers() ([]User, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, username, is_admin, created_at FROM users ORDER BY username`,
+		`SELECT id, uuid, username, is_admin, created_at FROM users ORDER BY username`,
 	)
 	if err != nil {
 		return nil, err
@@ -307,7 +330,7 @@ func (d *DB) ListUsers() ([]User, error) {
 	for rows.Next() {
 		var u User
 		var isAdmin int
-		if err := rows.Scan(&u.ID, &u.Username, &isAdmin, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.UUID, &u.Username, &isAdmin, &u.CreatedAt); err != nil {
 			return nil, err
 		}
 		u.IsAdmin = isAdmin == 1

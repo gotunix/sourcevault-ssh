@@ -24,6 +24,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// UserMetadata represents the "Git First" source of truth mapped sequentially onto the system
+type UserMetadata struct {
+	ID        int64  `yaml:"id"`
+	UUID      string `yaml:"uuid"`
+	Username  string `yaml:"username"`
+	IsAdmin   bool   `yaml:"is_admin"`
+	CreatedAt string `yaml:"created_at"`
+}
+
 // OrgMetadata represents the "Git First" source of truth stored on the filesystem.
 // It allows recovering organization memberships if the SQLite database is lost.
 type OrgMetadata struct {
@@ -33,6 +42,45 @@ type OrgMetadata struct {
 	CreatedAt   string   `yaml:"created_at"`
 	Owners      []string `yaml:"owners"`
 	Users       map[string]string `yaml:"users"` // username: role
+}
+
+// SaveUserMetadata writes the user's account state to a metadata file
+// on the filesystem (user.yaml) inside the user's root folder.
+func (d *DB) SaveUserMetadata(repoRoot, username string) error {
+	user, err := d.GetUserByUsername(username)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return fmt.Errorf("user %q not found", username)
+	}
+
+	metadata := UserMetadata{
+		ID:        user.ID,
+		UUID:      user.UUID,
+		Username:  user.Username,
+		IsAdmin:   user.IsAdmin,
+		CreatedAt: user.CreatedAt,
+	}
+
+	userDir := filepath.Join(repoRoot, "users", username)
+	if err := os.MkdirAll(userDir, 0o750); err != nil {
+		return fmt.Errorf("creating user directory: %w", err)
+	}
+
+	metaPath := filepath.Join(userDir, "user.yaml")
+	data, err := yaml.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("marshalling metadata: %w", err)
+	}
+
+	return os.WriteFile(metaPath, data, 0o640)
+}
+
+// RemoveUserMetadata deletes the metadata file from the filesystem.
+func (d *DB) RemoveUserMetadata(repoRoot, username string) error {
+	metaPath := filepath.Join(repoRoot, "users", username, "user.yaml")
+	return os.Remove(metaPath)
 }
 
 // SaveOrgMetadata writes the organization's membership list to a metadata file
@@ -86,26 +134,79 @@ func (d *DB) SaveOrgMetadata(repoRoot, orgName string) error {
 	return os.WriteFile(metaPath, data, 0o640)
 }
 
-// SyncFromFilesystem scans the repository root for organization metadata files
+// SyncFromFilesystem scans the repository root for user and organization metadata files
 // and reconstructs the database state. This is the "Recovery" path.
 func (d *DB) SyncFromFilesystem(repoRoot string) error {
-	// 1. Sync Organizations
+	userDir := filepath.Join(repoRoot, "users")
+	
+	// 1. Sync Users
+	if err := d.syncUsers(userDir); err != nil {
+		return err
+	}
+
+	// 2. Sync Organizations
 	orgsDir := filepath.Join(repoRoot, "orgs")
 	if err := d.syncOrganizations(orgsDir); err != nil {
 		return err
 	}
 
-	// 2. Sync Personal Repositories (users/<username>/<repo>.git)
-	userDir := filepath.Join(repoRoot, "users")
+	// 3. Sync Personal Repositories (users/<username>/<repo>.git)
 	if err := d.syncRepositories(userDir, "user"); err != nil {
 		return err
 	}
 
-	// 3. Sync Organization Repositories (orgs/<org>/<repo>.git)
+	// 4. Sync Organization Repositories (orgs/<org>/<repo>.git)
 	if err := d.syncRepositories(orgsDir, "org"); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+func (d *DB) syncUsers(usersDir string) error {
+	entries, err := os.ReadDir(usersDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		username := entry.Name()
+		metaPath := filepath.Join(usersDir, username, "user.yaml")
+		data, err := os.ReadFile(metaPath)
+		if err != nil {
+			continue
+		}
+
+		var metadata UserMetadata
+		if err := yaml.Unmarshal(data, &metadata); err != nil {
+			continue
+		}
+
+		user, err := d.GetUserByUsername(username)
+		if err != nil {
+			return err
+		}
+		if user == nil {
+			log.Printf("[sync] Re-creating user: %s", username)
+			_, err = d.RestoreUser(metadata.ID, metadata.UUID, metadata.Username, metadata.IsAdmin, metadata.CreatedAt)
+			if err != nil {
+				return err
+			}
+		} else if user.IsAdmin != metadata.IsAdmin {
+			adminVal := 0
+			if metadata.IsAdmin {
+				adminVal = 1
+			}
+			d.conn.Exec(`UPDATE users SET is_admin = ? WHERE id = ?`, adminVal, metadata.ID)
+		}
+	}
 	return nil
 }
 

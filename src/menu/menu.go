@@ -91,11 +91,11 @@ func RunAdmin(database *db.DB, currentUser string) {
 		case "1":
 			listUsers(database)
 		case "2":
-			addUser(database, reader)
+			addUser(database, reader, repoRoot)
 		case "3":
-			removeUser(database, reader)
+			removeUser(database, reader, repoRoot)
 		case "4":
-			toggleAdmin(database, reader)
+			toggleAdmin(database, reader, repoRoot)
 		case "5":
 			addKey(database, reader)
 		case "6":
@@ -226,7 +226,7 @@ func listUsers(database *db.DB) {
 // addUser prompts the admin for a username and admin flag, then creates the user.
 // The username is validated against isValidUsername before the database write.
 // An empty username input cancels the operation without error.
-func addUser(database *db.DB, reader *bufio.Reader) {
+func addUser(database *db.DB, reader *bufio.Reader, repoRoot string) {
 	username := prompt(reader, "Username: ")
 	if username == "" {
 		fmt.Println("[CANCELLED]")
@@ -245,13 +245,17 @@ func addUser(database *db.DB, reader *bufio.Reader) {
 		fmt.Printf("[ERROR] Could not create user: %v\n", err)
 		return
 	}
+
+	// Persist mapping sync YAMLs natively
+	_ = database.SaveUserMetadata(repoRoot, username)
+
 	fmt.Printf("[OK] User %q created (admin=%v)\n", username, isAdmin)
 }
 
 // removeUser prompts for a username and a confirmation, then permanently deletes
 // the user and all their associated SSH keys (enforced by the ON DELETE CASCADE
 // foreign key in the database schema). Requires the admin to type "yes" explicitly.
-func removeUser(database *db.DB, reader *bufio.Reader) {
+func removeUser(database *db.DB, reader *bufio.Reader, repoRoot string) {
 	username := prompt(reader, "Username to remove: ")
 	if username == "" {
 		fmt.Println("[CANCELLED]")
@@ -268,13 +272,17 @@ func removeUser(database *db.DB, reader *bufio.Reader) {
 		fmt.Printf("[ERROR] %v\n", err)
 		return
 	}
+
+	// Drop YAML bindings
+	_ = database.RemoveUserMetadata(repoRoot, username)
+
 	fmt.Printf("[OK] User %q and all associated keys removed.\n", username)
 }
 
 // toggleAdmin flips the admin flag for a user.
 // If the user is currently an admin, they are demoted; if they are not, they are promoted.
 // The current state is fetched from the database so the UI always reflects truth.
-func toggleAdmin(database *db.DB, reader *bufio.Reader) {
+func toggleAdmin(database *db.DB, reader *bufio.Reader, repoRoot string) {
 	username := prompt(reader, "Username: ")
 	if username == "" {
 		fmt.Println("[CANCELLED]")
@@ -292,6 +300,10 @@ func toggleAdmin(database *db.DB, reader *bufio.Reader) {
 		fmt.Printf("[ERROR] %v\n", err)
 		return
 	}
+
+	// Persist mapping sync YAMLs natively
+	_ = database.SaveUserMetadata(repoRoot, username)
+
 	status := "revoked"
 	if newAdmin {
 		status = "granted"
