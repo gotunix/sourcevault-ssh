@@ -869,7 +869,8 @@ func runRepoMenu(database *db.DB, reader *bufio.Reader, ownerID int64, ownerName
 		fmt.Println("2. Create Repository")
 		fmt.Println("3. Delete Repository")
 		fmt.Println("4. Manage Collaborators")
-		fmt.Println("5. Back")
+		fmt.Println("5. Verify Commits (GPG)")
+		fmt.Println("6. Back")
 		fmt.Print("\n(repos) ==> ")
 
 		choice := readLine(reader)
@@ -883,6 +884,8 @@ func runRepoMenu(database *db.DB, reader *bufio.Reader, ownerID int64, ownerName
 		case "4":
 			manageCollaborators(database, reader, repoRoot)
 		case "5":
+			verifyRepoCommits(database, reader, repoRoot)
+		case "6":
 			return
 		}
 	}
@@ -895,7 +898,8 @@ func runOrgRepoMenu(database *db.DB, reader *bufio.Reader, orgID int64, orgName,
 		fmt.Println("2. Create Repository")
 		fmt.Println("3. Delete Repository")
 		fmt.Println("4. Manage Collaborators")
-		fmt.Println("5. Back")
+		fmt.Println("5. Verify Commits (GPG)")
+		fmt.Println("6. Back")
 		fmt.Print("\n(org-repos) ==> ")
 
 		choice := readLine(reader)
@@ -909,6 +913,8 @@ func runOrgRepoMenu(database *db.DB, reader *bufio.Reader, orgID int64, orgName,
 		case "4":
 			manageCollaborators(database, reader, repoRoot)
 		case "5":
+			verifyRepoCommits(database, reader, repoRoot)
+		case "6":
 			return
 		}
 	}
@@ -1034,6 +1040,66 @@ func listAccessibleRepos(database *db.DB, username string) {
 	fmt.Println("  " + strings.Repeat("─", 80))
 	for _, r := range repos {
 		fmt.Printf("  %-30s  %-10s  %s\n", r.Path, r.UserRole, r.Description)
+	}
+}
+
+func verifyRepoCommits(database *db.DB, reader *bufio.Reader, repoRoot string) {
+	fmt.Print("Enter logical path to inspect (e.g. users/alice/myrepo.git): ")
+	path := readLine(reader)
+	if path == "" {
+		return
+	}
+
+	repo, err := database.GetRepoByPath(path)
+	if err != nil || repo == nil {
+		fmt.Printf("[ERROR] Repository %q not found in database.\n", path)
+		return
+	}
+
+	var physicalPath string
+	if repo.OwnerType == "user" {
+		physicalPath = filepath.Join(repoRoot, repo.Path)
+	} else {
+		physicalPath = filepath.Join(repoRoot, "orgs", repo.Path)
+	}
+
+	output, err := shell.LogRepoCommitsGPG(physicalPath)
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+
+	if output == "" {
+		fmt.Println("  (no commits found)")
+		return
+	}
+
+	fmt.Printf("\n--- Commit Log for %s ---\n", path)
+	lines := strings.Split(output, "\n")
+	for _, l := range lines {
+		parts := strings.SplitN(l, " | ", 4)
+		if len(parts) < 4 {
+			continue
+		}
+		hash := parts[0]
+		status := parts[1]
+		author := parts[2]
+		msg := parts[3]
+
+		statusStr := "[Unverified]"
+		if status == "G" {
+			statusStr = "[ Verified ]"
+		} else if status == "B" {
+			statusStr = "[ BAD SIG  ]"
+		} else if status == "U" {
+			statusStr = "[ Unknown  ]"
+		} else if status == "X" {
+			statusStr = "[ Expired  ]"
+		} else if status == "R" {
+			statusStr = "[ Revoked  ]"
+		}
+
+		fmt.Printf("  %s %s  %-15s  %s\n", statusStr, hash, author, msg)
 	}
 }
 
