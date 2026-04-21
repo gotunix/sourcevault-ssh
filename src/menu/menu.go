@@ -73,13 +73,16 @@ func RunAdmin(database *db.DB, currentUser string) {
 		fmt.Println("  4. Toggle Admin")
 		fmt.Println("  5. Add SSH Key to User")
 		fmt.Println("  6. Remove SSH Key from User")
-		fmt.Println("  7. List Keys for User")
-		fmt.Println("  8. List Trusted CAs")
-		fmt.Println("  9. Add Trusted CA")
-		fmt.Println(" 10. Remove Trusted CA")
-		fmt.Println(" 11. Manage Organizations")
-		fmt.Println(" 12. Version")
-		fmt.Println(" 13. Exit")
+		fmt.Println("  7. List SSH Keys for User")
+		fmt.Println("  8. Add GPG Key to User")
+		fmt.Println("  9. Remove GPG Key from User")
+		fmt.Println(" 10. List GPG Keys for User")
+		fmt.Println(" 11. List Trusted CAs")
+		fmt.Println(" 12. Add Trusted CA")
+		fmt.Println(" 13. Remove Trusted CA")
+		fmt.Println(" 14. Manage Organizations")
+		fmt.Println(" 15. Version")
+		fmt.Println(" 16. Exit")
 		fmt.Print("\n==> ")
 
 		choice := readLine(reader)
@@ -100,16 +103,22 @@ func RunAdmin(database *db.DB, currentUser string) {
 		case "7":
 			listKeys(database, reader)
 		case "8":
-			listCAs(database)
+			addGPGKey(database, reader)
 		case "9":
-			addCA(database, reader)
+			removeGPGKey(database, reader)
 		case "10":
-			removeCA(database, reader)
+			listGPGKeys(database, reader)
 		case "11":
-			runOrgMenu(database, reader, repoRoot, currentUser)
+			listCAs(database)
 		case "12":
-			version.Print()
+			addCA(database, reader)
 		case "13":
+			removeCA(database, reader)
+		case "14":
+			runOrgMenu(database, reader, repoRoot, currentUser)
+		case "15":
+			version.Print()
+		case "16":
 			fmt.Println("Goodbye.")
 			return
 		default:
@@ -403,6 +412,137 @@ func listKeys(database *db.DB, reader *bufio.Reader) {
 			comment = "(no comment)"
 		}
 		fmt.Printf("  %-50s  %s  %s\n", k.Fingerprint, k.KeyType, comment)
+	}
+}
+
+// addGPGKey adds a GPG key for any user (admin only).
+func addGPGKey(database *db.DB, reader *bufio.Reader) {
+	username := prompt(reader, "Username: ")
+	if username == "" {
+		fmt.Println("[CANCELLED]")
+		return
+	}
+
+	user, err := database.GetUserByUsername(username)
+	if err != nil || user == nil {
+		fmt.Printf("[ERROR] User %q not found.\n", username)
+		return
+	}
+
+	fmt.Println("Paste the ASCII armored GPG public key block:")
+	fmt.Print("> ")
+	
+	var keyData strings.Builder
+	for {
+		line, err := reader.ReadString('\n')
+		keyData.WriteString(line)
+		
+		if strings.Contains(line, "-----END PGP PUBLIC KEY BLOCK-----") {
+			break
+		}
+		if err != nil {
+			break
+		}
+	}
+
+	dataBlock := strings.TrimSpace(keyData.String())
+	if dataBlock == "" || !strings.Contains(dataBlock, "-----BEGIN PGP PUBLIC KEY BLOCK-----") {
+		fmt.Println("[CANCELLED] Invalid block.")
+		return
+	}
+
+	fingerprint, err := shell.ImportGPGKey(dataBlock)
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+
+	if err := shell.TrustGPGKey(fingerprint); err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		_ = shell.DeleteGPGKey(fingerprint)
+		return
+	}
+
+	comment := "Imported GPG Key"
+
+	if _, err := database.AddGPGKey(user.ID, fingerprint, dataBlock, comment); err != nil {
+		fmt.Printf("[ERROR] Could not add key to DB (already registered?): %v\n", err)
+		return
+	}
+
+	fmt.Printf("[OK] GPG Key added for %q\n  Fingerprint: %s\n", username, fingerprint)
+}
+
+// removeGPGKey removes a GPG key by its fingerprint (admin only).
+func removeGPGKey(database *db.DB, reader *bufio.Reader) {
+	fingerprint := prompt(reader, "GPG Key fingerprint to remove: ")
+	if fingerprint == "" {
+		fmt.Println("[CANCELLED]")
+		return
+	}
+
+	fingerprint = strings.ReplaceAll(fingerprint, " ", "")
+
+	key, err := database.LookupGPGKeyByFingerprint(fingerprint)
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+	if key == nil {
+		fmt.Println("[ERROR] No GPG key with that fingerprint found in DB.")
+		return
+	}
+
+	confirm := prompt(reader, fmt.Sprintf("Remove GPG key %s (owned by %q)? (yes/no): ", fingerprint, key.Username))
+	if strings.ToLower(confirm) != "yes" {
+		fmt.Println("[CANCELLED]")
+		return
+	}
+
+	if err := database.RemoveGPGKeyByFingerprint(fingerprint); err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+	
+	if err := shell.DeleteGPGKey(fingerprint); err != nil {
+		fmt.Printf("[WARNING] DB entry removed, but keyring deletion failed: %v\n", err)
+	}
+
+	fmt.Printf("[OK] GPG Key %s removed.\n", fingerprint)
+}
+
+// listGPGKeys lists GPG keys for a user (admin only).
+func listGPGKeys(database *db.DB, reader *bufio.Reader) {
+	username := prompt(reader, "Username: ")
+	if username == "" {
+		fmt.Println("[CANCELLED]")
+		return
+	}
+
+	user, err := database.GetUserByUsername(username)
+	if err != nil || user == nil {
+		fmt.Printf("[ERROR] User %q not found.\n", username)
+		return
+	}
+
+	keys, err := database.ListGPGKeysForUser(user.ID)
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+
+	if len(keys) == 0 {
+		fmt.Printf("  (no GPG keys registered for %q)\n", username)
+		return
+	}
+
+	fmt.Printf("\n  GPG Keys for %q:\n", username)
+	for i, k := range keys {
+		comment := k.Comment
+		if comment == "" {
+			comment = "(no comment)"
+		}
+		fmt.Printf("  [%d]  %s\n       %s\n", i+1, k.Fingerprint, comment)
 	}
 }
 
