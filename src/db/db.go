@@ -272,14 +272,13 @@ func (d *DB) CreateUser(username string, isAdmin bool) (*User, error) {
 	if isAdmin {
 		admin = 1
 	}
-	res, err := d.conn.Exec(
+	_, err := d.conn.Exec(
 		`INSERT INTO users (username, is_admin) VALUES (?, ?)`,
 		username, admin,
 	)
 	if err != nil {
 		return nil, err
 	}
-	id, _ := res.LastInsertId()
 	return d.GetUserByUsername(username) // Re-fetch to retrieve the randomly generated UUID mapping
 }
 

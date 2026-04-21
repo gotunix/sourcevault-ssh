@@ -84,6 +84,13 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Sync GitOps Configs out of local volume storage back into SQLite seamlessly
+# ---------------------------------------------------------------------------
+echo "[entrypoint] Synchronizing GitOps state mappings from persistent storage..."
+gosu git /usr/local/bin/git-shell --sync
+echo "[entrypoint] Sync complete (exit code: $?)"
+
+# ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 mkdir -p /var/log/git
