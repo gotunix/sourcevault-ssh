@@ -1208,12 +1208,12 @@ func listIssues(absPath string) {
 
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	for _, line := range lines {
-		// format: 100644 blob <hash>    issues/<uuid>.yaml
-		parts := strings.Fields(line)
-		if len(parts) < 4 {
+		// format: <mode> <type> <hash>\t<path>
+		lastTab := strings.LastIndex(line, "\t")
+		if lastTab == -1 {
 			continue
 		}
-		path := parts[3]
+		path := line[lastTab+1:]
 		content, err := shell.GetIssueContent(absPath, path)
 		if err != nil {
 			continue

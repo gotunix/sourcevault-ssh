@@ -293,7 +293,8 @@ created_at: %q
 
 // ListIssues returns a list of issue files from the 'sourcevault' branch.
 func ListIssues(absPath string) (string, error) {
-	cmd := exec.Command("git", "ls-tree", "-r", "sourcevault:issues")
+	// Use space to get paths relative to branch root (e.g. issues/xxx.yaml)
+	cmd := exec.Command("git", "ls-tree", "-r", "sourcevault", "issues")
 	cmd.Dir = absPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
