@@ -39,6 +39,7 @@ WORKDIR /app
 COPY src/ ./
 RUN go mod tidy
 RUN CGO_ENABLED=0 GOOS=linux go build -o /app/sv-shell .
+RUN CGO_ENABLED=0 GOOS=linux go build -o /app/sv-admin ./cmd/sv-admin
 
 # Stage 3: Create the final runtime image
 FROM debian:stable-slim
@@ -72,6 +73,7 @@ COPY --from=openssh-builder /usr/libexec/sshd-session /usr/libexec/sshd-session
 
 # Copy compiled Golang Orchestrator payload seamlessly exactly perfectly logically natively brilliantly organically properly naturally
 COPY --from=go-builder /app/sv-shell /usr/local/bin/git-shell
+COPY --from=go-builder /app/sv-admin /usr/local/bin/sv-admin
 
 # Copy underlying infrastructure configs
 COPY files/issue /etc/issue.net

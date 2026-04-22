@@ -26,11 +26,13 @@ import (
 
 // UserMetadata represents the "Git First" source of truth mapped sequentially onto the system
 type UserMetadata struct {
-	ID        int64  `yaml:"id"`
-	UUID      string `yaml:"uuid"`
-	Username  string `yaml:"username"`
-	IsAdmin   bool   `yaml:"is_admin"`
-	CreatedAt string `yaml:"created_at"`
+	ID                int64  `yaml:"id"`
+	UUID              string `yaml:"uuid"`
+	Username          string `yaml:"username"`
+	IsAdmin           bool   `yaml:"is_admin"`
+	AdminPasswordHash string `yaml:"admin_password_hash"`
+	AdminPasswordSet  bool   `yaml:"admin_password_set"`
+	CreatedAt         string `yaml:"created_at"`
 }
 
 // OrgMetadata represents the "Git First" source of truth stored on the filesystem.
@@ -56,11 +58,13 @@ func (d *DB) SaveUserMetadata(repoRoot, username string) error {
 	}
 
 	metadata := UserMetadata{
-		ID:        user.ID,
-		UUID:      user.UUID,
-		Username:  user.Username,
-		IsAdmin:   user.IsAdmin,
-		CreatedAt: user.CreatedAt,
+		ID:                user.ID,
+		UUID:              user.UUID,
+		Username:          user.Username,
+		IsAdmin:           user.IsAdmin,
+		AdminPasswordHash: user.AdminPasswordHash,
+		AdminPasswordSet:  user.AdminPasswordSet,
+		CreatedAt:         user.CreatedAt,
 	}
 
 	userDir := filepath.Join(repoRoot, "users", username)
@@ -195,7 +199,7 @@ func (d *DB) syncUsers(usersDir string) error {
 		}
 		if user == nil {
 			log.Printf("[sync] Re-creating user: %s", username)
-			_, err = d.RestoreUser(metadata.ID, metadata.UUID, metadata.Username, metadata.IsAdmin, metadata.CreatedAt)
+			_, err = d.RestoreUser(metadata.ID, metadata.UUID, metadata.Username, metadata.IsAdmin, metadata.AdminPasswordHash, metadata.AdminPasswordSet, metadata.CreatedAt)
 			if err != nil {
 				return err
 			}

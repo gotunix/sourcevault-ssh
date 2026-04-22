@@ -253,12 +253,9 @@ func main() {
 		log.Printf("Identity resolved via certificate for interactive session: user=%s isAdmin=%v", gitUser, isAdmin)
 	}
 
-	if isAdmin {
-		// Admin TUI — full user and key management.
-		menu.RunAdmin(database, gitUser)
-	} else if gitUser != "" {
-		// User self-service TUI — manage own keys and (future) PGP keys.
-		menu.RunUser(database, gitUser)
+	if gitUser != "" {
+		// Run the TUI. Admins can use 'enable' to access admin features.
+		menu.RunUser(database, gitUser, isAdmin)
 	} else {
 		fmt.Fprintf(os.Stderr, "Restricted: Interactive access is not enabled for this user.\n")
 		os.Exit(1)

@@ -46,17 +46,21 @@ import (
 	"path/filepath"
 	"strings"
 
+	"golang.org/x/crypto/bcrypt"
+
 	// Pure-Go SQLite driver — works with CGO_ENABLED=0.
 	_ "modernc.org/sqlite"
 )
 
 // User represents an internal SourceVault application user.
 type User struct {
-	ID        int64
-	UUID      string
-	Username  string
-	IsAdmin   bool
-	CreatedAt string
+	ID                int64
+	UUID              string
+	Username          string
+	IsAdmin           bool
+	AdminPasswordHash string
+	AdminPasswordSet  bool
+	CreatedAt         string
 }
 
 // SSHKey represents a public SSH key registered to a user.
@@ -179,6 +183,8 @@ func (d *DB) migrate() error {
 			uuid       TEXT    NOT NULL UNIQUE DEFAULT (lower(hex(randomblob(16)))),
 			username   TEXT    NOT NULL UNIQUE,
 			is_admin   INTEGER NOT NULL DEFAULT 0,
+			admin_password_hash TEXT NOT NULL DEFAULT '',
+			admin_password_set  INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 		);
 
@@ -251,6 +257,10 @@ func (d *DB) migrate() error {
 	d.conn.Exec(`ALTER TABLE users ADD COLUMN uuid TEXT NOT NULL DEFAULT (lower(hex(randomblob(16))))`)
 	d.conn.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_uuid ON users(uuid)`)
 
+	// Inject admin password columns dynamically into legacy SQLite stores
+	d.conn.Exec(`ALTER TABLE users ADD COLUMN admin_password_hash TEXT NOT NULL DEFAULT ''`)
+	d.conn.Exec(`ALTER TABLE users ADD COLUMN admin_password_set INTEGER NOT NULL DEFAULT 0`)
+
 	return err
 }
 
@@ -283,28 +293,41 @@ func (d *DB) CreateUser(username string, isAdmin bool) (*User, error) {
 }
 
 // RestoreUser forces an exact metadata insert mapping to reconstruct a user structurally
-func (d *DB) RestoreUser(id int64, uuid string, username string, isAdmin bool, createdAt string) (*User, error) {
+func (d *DB) RestoreUser(id int64, uuid string, username string, isAdmin bool, passwordHash string, passwordSet bool, createdAt string) (*User, error) {
 	admin := 0
 	if isAdmin {
 		admin = 1
 	}
+	passSet := 0
+	if passwordSet {
+		passSet = 1
+	}
 	_, err := d.conn.Exec(
-		`INSERT INTO users (id, uuid, username, is_admin, created_at) VALUES (?, ?, ?, ?, ?)`,
-		id, uuid, username, admin, createdAt,
+		`INSERT INTO users (id, uuid, username, is_admin, admin_password_hash, admin_password_set, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		id, uuid, username, admin, passwordHash, passSet, createdAt,
 	)
 	if err != nil {
 		return nil, err
 	}
-	return &User{ID: id, UUID: uuid, Username: username, IsAdmin: isAdmin, CreatedAt: createdAt}, nil
+	return &User{
+		ID:                id,
+		UUID:              uuid,
+		Username:          username,
+		IsAdmin:           isAdmin,
+		AdminPasswordHash: passwordHash,
+		AdminPasswordSet:  passwordSet,
+		CreatedAt:         createdAt,
+	}, nil
 }
 
 // GetUserByUsername fetches a user by their username. Returns nil if not found.
 func (d *DB) GetUserByUsername(username string) (*User, error) {
 	var u User
 	var isAdmin int
+	var adminPasswordSet int
 	err := d.conn.QueryRow(
-		`SELECT id, uuid, username, is_admin, created_at FROM users WHERE username = ?`, username,
-	).Scan(&u.ID, &u.UUID, &u.Username, &isAdmin, &u.CreatedAt)
+		`SELECT id, uuid, username, is_admin, admin_password_hash, admin_password_set, created_at FROM users WHERE username = ?`, username,
+	).Scan(&u.ID, &u.UUID, &u.Username, &isAdmin, &u.AdminPasswordHash, &adminPasswordSet, &u.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -312,13 +335,14 @@ func (d *DB) GetUserByUsername(username string) (*User, error) {
 		return nil, err
 	}
 	u.IsAdmin = isAdmin == 1
+	u.AdminPasswordSet = adminPasswordSet == 1
 	return &u, nil
 }
 
 // ListUsers returns all users ordered alphabetically.
 func (d *DB) ListUsers() ([]User, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, uuid, username, is_admin, created_at FROM users ORDER BY username`,
+		`SELECT id, uuid, username, is_admin, admin_password_hash, admin_password_set, created_at FROM users ORDER BY username`,
 	)
 	if err != nil {
 		return nil, err
@@ -329,10 +353,12 @@ func (d *DB) ListUsers() ([]User, error) {
 	for rows.Next() {
 		var u User
 		var isAdmin int
-		if err := rows.Scan(&u.ID, &u.UUID, &u.Username, &isAdmin, &u.CreatedAt); err != nil {
+		var adminPasswordSet int
+		if err := rows.Scan(&u.ID, &u.UUID, &u.Username, &isAdmin, &u.AdminPasswordHash, &adminPasswordSet, &u.CreatedAt); err != nil {
 			return nil, err
 		}
 		u.IsAdmin = isAdmin == 1
+		u.AdminPasswordSet = adminPasswordSet == 1
 		users = append(users, u)
 	}
 	return users, nil
@@ -344,7 +370,7 @@ func (d *DB) DeleteUser(username string) error {
 	return err
 }
 
-// SetAdmin promotes or demotes a user's admin status.
+// SetAdmin promoted or demoted a user's admin status.
 func (d *DB) SetAdmin(username string, isAdmin bool) error {
 	admin := 0
 	if isAdmin {
@@ -353,6 +379,44 @@ func (d *DB) SetAdmin(username string, isAdmin bool) error {
 	_, err := d.conn.Exec(`UPDATE users SET is_admin = ? WHERE username = ?`, admin, username)
 	return err
 }
+
+// SetAdminPassword updates the admin password for a user.
+func (d *DB) SetAdminPassword(username, password string) error {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hashing password: %w", err)
+	}
+
+	_, err = d.conn.Exec(
+		`UPDATE users SET admin_password_hash = ?, admin_password_set = 1 WHERE username = ?`,
+		string(hash), username,
+	)
+	return err
+}
+
+// VerifyAdminPassword verifies the admin password for a user.
+func (d *DB) VerifyAdminPassword(username, password string) (bool, error) {
+	var hash string
+	err := d.conn.QueryRow(`SELECT admin_password_hash FROM users WHERE username = ?`, username).Scan(&hash)
+	if err != nil {
+		return false, err
+	}
+
+	if hash == "" {
+		return false, nil
+	}
+
+	err = bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	if err == bcrypt.ErrMismatchedHashAndPassword {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+
 
 // ---------------------------------------------------------------------------
 // SSH key operations
@@ -725,6 +789,29 @@ func (d *DB) ListReposByOwner(ownerType string, ownerID int64) ([]Repository, er
 	rows, err := d.conn.Query(
 		`SELECT id, name, owner_type, owner_id, path, description, config_cache, is_public, created_at FROM repositories WHERE owner_type = ? AND owner_id = ? ORDER BY name`,
 		ownerType, ownerID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var repos []Repository
+	for rows.Next() {
+		var r Repository
+		var public int
+		if err := rows.Scan(&r.ID, &r.Name, &r.OwnerType, &r.OwnerID, &r.Path, &r.Description, &r.ConfigCache, &public, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		r.IsPublic = public == 1
+		repos = append(repos, r)
+	}
+	return repos, nil
+}
+
+// ListAllRepos returns all repositories registered in the database.
+func (d *DB) ListAllRepos() ([]Repository, error) {
+	rows, err := d.conn.Query(
+		`SELECT id, name, owner_type, owner_id, path, description, config_cache, is_public, created_at FROM repositories ORDER BY path`,
 	)
 	if err != nil {
 		return nil, err

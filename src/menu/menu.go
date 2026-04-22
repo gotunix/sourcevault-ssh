@@ -81,8 +81,10 @@ func RunAdmin(database *db.DB, currentUser string) {
 		fmt.Println(" 12. Add Trusted CA")
 		fmt.Println(" 13. Remove Trusted CA")
 		fmt.Println(" 14. Manage Organizations")
-		fmt.Println(" 15. Version")
-		fmt.Println(" 16. Exit")
+		fmt.Println(" 15. List All Organizations")
+		fmt.Println(" 16. List All Repositories")
+		fmt.Println(" 17. Version")
+		fmt.Println(" 18. Exit")
 		fmt.Print("\n==> ")
 
 		choice := readLine(reader)
@@ -117,8 +119,12 @@ func RunAdmin(database *db.DB, currentUser string) {
 		case "14":
 			runOrgMenu(database, reader, repoRoot, currentUser)
 		case "15":
-			version.Print()
+			listOrgs(database)
 		case "16":
+			listAllRepos(database)
+		case "17":
+			version.Print()
+		case "18":
 			fmt.Println("Goodbye.")
 			return
 		default:
@@ -134,7 +140,7 @@ func RunAdmin(database *db.DB, currentUser string) {
 // Restrictions:
 //   - Users can only view and manage keys belonging to their own account.
 //   - Users cannot elevate privileges or see other users' data.
-func RunUser(database *db.DB, username string) {
+func RunUser(database *db.DB, username string, isAdmin bool) {
 	reader := bufio.NewReader(os.Stdin)
 	repoRoot := os.Getenv("GIT_SHELL_REPO_ROOT")
 	if repoRoot == "" {
@@ -146,6 +152,31 @@ func RunUser(database *db.DB, username string) {
 	if err != nil || user == nil {
 		fmt.Fprintf(os.Stderr, "Error: could not load your user account (%v)\n", err)
 		return
+	}
+
+	// Force admin password generation on first login for admins.
+	if isAdmin && !user.AdminPasswordSet {
+		fmt.Println("\n[!] This is your first admin login. You MUST generate an admin password.")
+		for {
+			pass := prompt(reader, "Enter new admin password: ")
+			if len(pass) < 8 {
+				fmt.Println("[ERROR] Password must be at least 8 characters.")
+				continue
+			}
+			confirm := prompt(reader, "Confirm admin password: ")
+			if pass != confirm {
+				fmt.Println("[ERROR] Passwords do not match.")
+				continue
+			}
+			if err := database.SetAdminPassword(username, pass); err != nil {
+				fmt.Printf("[ERROR] Could not set admin password: %v\n", err)
+				continue
+			}
+			_ = database.SaveUserMetadata(repoRoot, username)
+			fmt.Println("[OK] Admin password generated successfully.")
+			user.AdminPasswordSet = true
+			break
+		}
 	}
 
 	fmt.Println("╔══════════════════════════════════════╗")
@@ -163,10 +194,20 @@ func RunUser(database *db.DB, username string) {
 		fmt.Println("  7. Import GPG Key")
 		fmt.Println("  8. Remove GPG Key")
 		fmt.Println("  9. Version")
-		fmt.Println(" 10. Exit")
+		if isAdmin {
+			fmt.Println(" 10. Enable Admin Mode")
+			fmt.Println(" 11. Exit")
+		} else {
+			fmt.Println(" 10. Exit")
+		}
 		fmt.Print("\n==> ")
 
 		choice := readLine(reader)
+
+		// Handle 'enable' command for admins
+		if isAdmin && choice == "enable" {
+			choice = "10"
+		}
 
 		switch choice {
 		case "1":
@@ -188,8 +229,29 @@ func RunUser(database *db.DB, username string) {
 		case "9":
 			version.Print()
 		case "10":
-			fmt.Println("Goodbye.")
-			return
+			if isAdmin {
+				// Prompt for admin password to enable admin mode.
+				pass := prompt(reader, "Admin Password: ")
+				valid, err := database.VerifyAdminPassword(username, pass)
+				if err != nil {
+					fmt.Printf("[ERROR] Internal error: %v\n", err)
+					continue
+				}
+				if valid {
+					RunAdmin(database, username)
+				} else {
+					fmt.Println("[DENIED] Incorrect admin password.")
+				}
+			} else {
+				fmt.Println("Goodbye.")
+				return
+			}
+		case "11":
+			if isAdmin {
+				fmt.Println("Goodbye.")
+				return
+			}
+			fmt.Println("[ERROR] Invalid option.")
 		default:
 			fmt.Println("[ERROR] Invalid option.")
 		}
@@ -1120,6 +1182,24 @@ func listRepos(database *db.DB, ownerType string, ownerID int64) {
 		return
 	}
 	fmt.Println("\nRepositories:")
+	fmt.Printf("  %-20s  %-40s  %s\n", "Name", "Path", "Description")
+	fmt.Println("  " + strings.Repeat("─", 80))
+	for _, r := range repos {
+		fmt.Printf("  %-20s  %-40s  %s\n", r.Name, r.Path, r.Description)
+	}
+}
+
+func listAllRepos(database *db.DB) {
+	repos, err := database.ListAllRepos()
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+	if len(repos) == 0 {
+		fmt.Println("  (no repositories registered)")
+		return
+	}
+	fmt.Println("\nAll Repositories:")
 	fmt.Printf("  %-20s  %-40s  %s\n", "Name", "Path", "Description")
 	fmt.Println("  " + strings.Repeat("─", 80))
 	for _, r := range repos {
