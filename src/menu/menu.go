@@ -44,6 +44,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+
+	"golang.org/x/term"
 
 	"github.com/gotunix/sourcevault-ssh/db"
 	"github.com/gotunix/sourcevault-ssh/shell"
@@ -158,12 +161,12 @@ func RunUser(database *db.DB, username string, isAdmin bool) {
 	if isAdmin && !user.AdminPasswordSet {
 		fmt.Println("\n[!] This is your first admin login. You MUST generate an admin password.")
 		for {
-			pass := prompt(reader, "Enter new admin password: ")
+			pass := promptPassword("Enter new admin password: ")
 			if len(pass) < 8 {
 				fmt.Println("[ERROR] Password must be at least 8 characters.")
 				continue
 			}
-			confirm := prompt(reader, "Confirm admin password: ")
+			confirm := promptPassword("Confirm admin password: ")
 			if pass != confirm {
 				fmt.Println("[ERROR] Passwords do not match.")
 				continue
@@ -231,7 +234,7 @@ func RunUser(database *db.DB, username string, isAdmin bool) {
 		case "10":
 			if isAdmin {
 				// Prompt for admin password to enable admin mode.
-				pass := prompt(reader, "Admin Password: ")
+				pass := promptPassword("Admin Password: ")
 				valid, err := database.VerifyAdminPassword(username, pass)
 				if err != nil {
 					fmt.Printf("[ERROR] Internal error: %v\n", err)
@@ -628,6 +631,17 @@ func listGPGKeys(database *db.DB, reader *bufio.Reader) {
 func prompt(reader *bufio.Reader, text string) string {
 	fmt.Print("  " + text)
 	return readLine(reader)
+}
+
+// promptPassword prints a prompt and reads a password without echoing.
+func promptPassword(text string) string {
+	fmt.Print("  " + text)
+	bytePassword, err := term.ReadPassword(int(syscall.Stdin))
+	if err != nil {
+		return ""
+	}
+	fmt.Println() // Add a newline since ReadPassword doesn't.
+	return strings.TrimSpace(string(bytePassword))
 }
 
 // readLine reads a line from reader, trimming surrounding whitespace.
