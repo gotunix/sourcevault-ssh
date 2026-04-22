@@ -118,3 +118,75 @@ func LogRepoCommitsGPG(absPath string) (string, error) {
 	}
 	return outStr, nil
 }
+
+// InitializeSourceVaultBranch creates an orphan 'sourcevault' branch with a standard
+// directory structure for managing project metadata (issues, bugs, etc).
+func InitializeSourceVaultBranch(absPath string) error {
+	// 1. Create a temporary worktree/index to craft the orphan commit
+	// Since we are in a bare repo, we can't easily 'checkout' without a worktree.
+	// But we can use low-level git commands to create a commit and a ref.
+
+	// Check if branch already exists
+	checkCmd := exec.Command("git", "show-ref", "--verify", "refs/heads/sourcevault")
+	checkCmd.Dir = absPath
+	if err := checkCmd.Run(); err == nil {
+		return fmt.Errorf("branch 'sourcevault' already exists")
+	}
+
+	// Define the directory structure we want to "suggest" via a README
+	readmeContent := `# SourceVault Management Branch
+
+This branch is used for managing project metadata.
+The following directory structure is recommended:
+
+- /issues/            - Active and closed issues
+- /bugs/              - Bug reports and tracking
+- /features/          - Feature requests and proposals
+- /pull-requests/     - Metadata about proposed changes
+- /roadmaps/          - Project roadmaps and milestones
+- /milestones/        - Version-specific goals
+
+Files should ideally be in Markdown or YAML format for easy consumption.
+`
+
+	// To create an orphan commit in a bare repo:
+	// a. Create a blob for the README
+	hashObjectCmd := exec.Command("git", "hash-object", "-w", "--stdin")
+	hashObjectCmd.Dir = absPath
+	hashObjectCmd.Stdin = strings.NewReader(readmeContent)
+	blobHashBytes, err := hashObjectCmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to create README blob: %w", err)
+	}
+	blobHash := strings.TrimSpace(string(blobHashBytes))
+
+	// b. Create a tree with that blob
+	// Format: "100644 blob <hash>\tREADME.md"
+	treeEntry := fmt.Sprintf("100644 blob %s\tREADME.md", blobHash)
+	mktreeCmd := exec.Command("git", "mktree")
+	mktreeCmd.Dir = absPath
+	mktreeCmd.Stdin = strings.NewReader(treeEntry + "\n")
+	treeHashBytes, err := mktreeCmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to create tree: %w", err)
+	}
+	treeHash := strings.TrimSpace(string(treeHashBytes))
+
+	// c. Create a commit from that tree (no parents = orphan)
+	commitTreeCmd := exec.Command("git", "commit-tree", treeHash, "-m", "Initialize SourceVault Management Branch")
+	commitTreeCmd.Dir = absPath
+	commitHashBytes, err := commitTreeCmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to create commit: %w", err)
+	}
+	commitHash := strings.TrimSpace(string(commitHashBytes))
+
+	// d. Update (or create) the ref refs/heads/sourcevault
+	updateRefCmd := exec.Command("git", "update-ref", "refs/heads/sourcevault", commitHash)
+	updateRefCmd.Dir = absPath
+	if err := updateRefCmd.Run(); err != nil {
+		return fmt.Errorf("failed to update ref: %w", err)
+	}
+
+	return nil
+}

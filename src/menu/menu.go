@@ -1074,7 +1074,8 @@ func runRepoMenu(database *db.DB, reader *bufio.Reader, ownerID int64, ownerName
 		fmt.Println("5. Verify Commits (GPG)")
 		fmt.Println("6. Configure Auto-Mirroring")
 		fmt.Println("7. Manage Outbound Deploy Key")
-		fmt.Println("8. Back")
+		fmt.Println("8. Initialize Management Branch")
+		fmt.Println("9. Back")
 		fmt.Print("\n(repos) ==> ")
 
 		choice := readLine(reader)
@@ -1094,6 +1095,8 @@ func runRepoMenu(database *db.DB, reader *bufio.Reader, ownerID int64, ownerName
 		case "7":
 			manageDeployKey(reader, "user", ownerName, repoRoot)
 		case "8":
+			setupManagementBranch(database, reader, repoRoot)
+		case "9":
 			return
 		}
 	}
@@ -1109,7 +1112,8 @@ func runOrgRepoMenu(database *db.DB, reader *bufio.Reader, orgID int64, orgName,
 		fmt.Println("5. Verify Commits (GPG)")
 		fmt.Println("6. Configure Auto-Mirroring")
 		fmt.Println("7. Manage Outbound Deploy Key")
-		fmt.Println("8. Back")
+		fmt.Println("8. Initialize Management Branch")
+		fmt.Println("9. Back")
 		fmt.Print("\n(org-repos) ==> ")
 
 		choice := readLine(reader)
@@ -1129,9 +1133,41 @@ func runOrgRepoMenu(database *db.DB, reader *bufio.Reader, orgID int64, orgName,
 		case "7":
 			manageDeployKey(reader, "org", orgName, repoRoot)
 		case "8":
+			setupManagementBranch(database, reader, repoRoot)
+		case "9":
 			return
 		}
 	}
+}
+
+func setupManagementBranch(database *db.DB, reader *bufio.Reader, repoRoot string) {
+	fmt.Print("Enter logical path of repository (e.g. users/alice/myrepo.git): ")
+	logicalPath := readLine(reader)
+	if logicalPath == "" {
+		return
+	}
+
+	repo, err := database.GetRepoByPath(logicalPath)
+	if err != nil || repo == nil {
+		fmt.Printf("[ERROR] Repository %q not found in database.\n", logicalPath)
+		return
+	}
+
+	var physicalPath string
+	if repo.OwnerType == "user" {
+		physicalPath = filepath.Join(repoRoot, repo.Path)
+	} else {
+		physicalPath = filepath.Join(repoRoot, "orgs", repo.Path)
+	}
+
+	fmt.Printf("Initializing 'sourcevault' management branch for %q...\n", logicalPath)
+	if err := shell.InitializeSourceVaultBranch(physicalPath); err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+
+	fmt.Println("[OK] 'sourcevault' orphan branch created successfully.")
+	fmt.Println("     Users can now push/pull to this branch to manage project metadata.")
 }
 
 func manageDeployKey(reader *bufio.Reader, ownerType, ownerName, repoRoot string) {
