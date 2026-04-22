@@ -1138,27 +1138,99 @@ func runManagementMenu(database *db.DB, reader *bufio.Reader, repoRoot, currentU
 			fmt.Println("1. Initialize Management Branch")
 			fmt.Println("2. Back")
 		} else {
-			fmt.Println("1. Create New Issue")
-			fmt.Println("2. Back")
+			fmt.Println("1. List Issues")
+			fmt.Println("2. View Issue")
+			fmt.Println("3. Create New Issue")
+			fmt.Println("4. Back")
 		}
 		fmt.Print("\n(mgmt) ==> ")
 
 		choice := readLine(reader)
-		if choice == "2" {
-			return
-		}
-		if choice == "1" {
-			if !hasBranch {
+		if !hasBranch {
+			if choice == "1" {
 				fmt.Printf("Initializing 'sourcevault' management branch...\n")
 				if err := shell.InitializeSourceVaultBranch(physicalPath); err != nil {
 					fmt.Printf("[ERROR] %v\n", err)
 				} else {
 					fmt.Println("[OK] Branch created.")
 				}
-			} else {
+			} else if choice == "2" {
+				return
+			}
+		} else {
+			switch choice {
+			case "1":
+				listIssues(physicalPath)
+			case "2":
+				viewIssue(physicalPath, reader)
+			case "3":
 				createIssue(physicalPath, reader, currentUser)
+			case "4":
+				return
 			}
 		}
+	}
+}
+
+func viewIssue(absPath string, reader *bufio.Reader) {
+	fmt.Print("Enter Issue ID: ")
+	issueID := readLine(reader)
+	if issueID == "" {
+		return
+	}
+
+	path := fmt.Sprintf("issues/%s.yaml", issueID)
+	content, err := shell.GetIssueContent(absPath, path)
+	if err != nil {
+		fmt.Printf("[ERROR] Issue %q not found or could not be read.\n", issueID)
+		return
+	}
+
+	fmt.Println("\n--- Issue Details ---")
+	fmt.Println(content)
+	fmt.Println("----------------------")
+}
+
+func listIssues(absPath string) {
+	output, err := shell.ListIssues(absPath)
+	if err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+		return
+	}
+	if output == "" {
+		fmt.Println("  (no issues found)")
+		return
+	}
+
+	fmt.Println("\nIssues:")
+	fmt.Printf("  %-40s  %s\n", "ID", "Title")
+	fmt.Println("  " + strings.Repeat("─", 60))
+
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for _, line := range lines {
+		// format: 100644 blob <hash>    issues/<uuid>.yaml
+		parts := strings.Fields(line)
+		if len(parts) < 4 {
+			continue
+		}
+		path := parts[3]
+		content, err := shell.GetIssueContent(absPath, path)
+		if err != nil {
+			continue
+		}
+
+		// Simple YAML parsing for display
+		title := ""
+		id := ""
+		for _, cLine := range strings.Split(content, "\n") {
+			if strings.HasPrefix(cLine, "title: ") {
+				title = strings.Trim(strings.TrimPrefix(cLine, "title: "), "\"")
+			}
+			if strings.HasPrefix(cLine, "id: ") {
+				id = strings.Trim(strings.TrimPrefix(cLine, "id: "), "\"")
+			}
+		}
+		fmt.Printf("  %-40s  %s\n", id, title)
 	}
 }
 

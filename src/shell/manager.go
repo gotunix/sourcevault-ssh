@@ -236,30 +236,37 @@ created_at: %q
 	}
 	blobHash := strings.TrimSpace(string(blobHashBytes))
 
-	// 3. Get current tree
-	lsTreeCmd := exec.Command("git", "ls-tree", "-r", "sourcevault")
-	lsTreeCmd.Dir = absPath
-	currentEntries, _ := lsTreeCmd.Output()
+	// 3. Create a temporary index to build the tree
+	tmpIndex := filepath.Join(absPath, fmt.Sprintf("index.tmp.%d", os.Getpid()))
+	defer os.Remove(tmpIndex)
 
-	// 4. Create new tree entries
-	newEntry := fmt.Sprintf("100644 blob %s\tissues/%s.yaml", blobHash, issueID)
-	
-	treeInput := string(currentEntries)
-	if treeInput != "" && !strings.HasSuffix(treeInput, "\n") {
-		treeInput += "\n"
+	// a. Read current tree into the temporary index
+	readTreeCmd := exec.Command("git", "read-tree", "sourcevault")
+	readTreeCmd.Dir = absPath
+	readTreeCmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+tmpIndex)
+	if err := readTreeCmd.Run(); err != nil {
+		return fmt.Errorf("failed to read tree into temp index: %w", err)
 	}
-	treeInput += newEntry + "\n"
 
-	mktreeCmd := exec.Command("git", "mktree")
-	mktreeCmd.Dir = absPath
-	mktreeCmd.Stdin = strings.NewReader(treeInput)
-	treeHashBytes, err := mktreeCmd.Output()
+	// b. Update index with the new blob
+	updateIndexCmd := exec.Command("git", "update-index", "--add", "--cacheinfo", "100644", blobHash, fmt.Sprintf("issues/%s.yaml", issueID))
+	updateIndexCmd.Dir = absPath
+	updateIndexCmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+tmpIndex)
+	if err := updateIndexCmd.Run(); err != nil {
+		return fmt.Errorf("failed to update index: %w", err)
+	}
+
+	// c. Write the tree
+	writeTreeCmd := exec.Command("git", "write-tree")
+	writeTreeCmd.Dir = absPath
+	writeTreeCmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+tmpIndex)
+	treeHashBytes, err := writeTreeCmd.Output()
 	if err != nil {
-		return fmt.Errorf("failed to update tree: %w", err)
+		return fmt.Errorf("failed to write tree: %w", err)
 	}
 	treeHash := strings.TrimSpace(string(treeHashBytes))
 
-	// 5. Create commit
+	// 4. Create commit
 	commitTreeCmd := exec.Command("git", "commit-tree", treeHash, "-p", parentCommit, "-m", fmt.Sprintf("Create issue: %s", title))
 	commitTreeCmd.Dir = absPath
 	commitTreeCmd.Env = append(os.Environ(),
@@ -274,7 +281,7 @@ created_at: %q
 	}
 	newCommitHash := strings.TrimSpace(string(newCommitHashBytes))
 
-	// 6. Update ref
+	// 5. Update ref
 	updateRefCmd := exec.Command("git", "update-ref", "refs/heads/sourcevault", newCommitHash)
 	updateRefCmd.Dir = absPath
 	if err := updateRefCmd.Run(); err != nil {
@@ -282,4 +289,30 @@ created_at: %q
 	}
 
 	return nil
+}
+
+// ListIssues returns a list of issue files from the 'sourcevault' branch.
+func ListIssues(absPath string) (string, error) {
+	cmd := exec.Command("git", "ls-tree", "-r", "sourcevault:issues")
+	cmd.Dir = absPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		outStr := string(output)
+		if strings.Contains(outStr, "exists on disk, but not in 'sourcevault'") || strings.Contains(outStr, "Not a valid object name") {
+			return "", nil // No issues folder yet
+		}
+		return "", fmt.Errorf("failed to list issues: %w (output: %s)", err, outStr)
+	}
+	return string(output), nil
+}
+
+// GetIssueContent returns the raw content of an issue file.
+func GetIssueContent(absPath, issuePath string) (string, error) {
+	cmd := exec.Command("git", "cat-file", "-p", "sourcevault:"+issuePath)
+	cmd.Dir = absPath
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
 }
