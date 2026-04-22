@@ -952,7 +952,13 @@ func configureMirroring(database *db.DB, reader *bufio.Reader, repoRoot string) 
 		return
 	}
 
-	physicalPath := filepath.Join(repoRoot, logicalPath)
+	var physicalPath string
+	if repo.OwnerType == "user" {
+		physicalPath = filepath.Join(repoRoot, logicalPath)
+	} else {
+		// Orgs are partitioned correctly away natively elegantly
+		physicalPath = filepath.Join(repoRoot, "orgs", logicalPath)
+	}
 	
 	for {
 		// Calculate current state efficiently seamlessly optimally
