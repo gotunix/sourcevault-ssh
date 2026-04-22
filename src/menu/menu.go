@@ -45,6 +45,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/term"
 
@@ -1065,8 +1066,16 @@ func removeCA(database *db.DB, reader *bufio.Reader) {
 // ---------------------------------------------------------------------------
 
 func runRepoMenu(database *db.DB, reader *bufio.Reader, ownerID int64, ownerName, repoRoot string) {
+	repoActionMenu(database, reader, "user", ownerID, ownerName, repoRoot)
+}
+
+func runOrgRepoMenu(database *db.DB, reader *bufio.Reader, orgID int64, orgName, repoRoot string) {
+	repoActionMenu(database, reader, "org", orgID, orgName, repoRoot)
+}
+
+func repoActionMenu(database *db.DB, reader *bufio.Reader, ownerType string, ownerID int64, ownerName, repoRoot string) {
 	for {
-		fmt.Printf("\n--- Repository Management for %s ---\n", ownerName)
+		fmt.Printf("\n--- Repository Management for %s [%s] ---\n", ownerName, ownerType)
 		fmt.Println("1. List Repositories")
 		fmt.Println("2. Create Repository")
 		fmt.Println("3. Delete Repository")
@@ -1074,16 +1083,16 @@ func runRepoMenu(database *db.DB, reader *bufio.Reader, ownerID int64, ownerName
 		fmt.Println("5. Verify Commits (GPG)")
 		fmt.Println("6. Configure Auto-Mirroring")
 		fmt.Println("7. Manage Outbound Deploy Key")
-		fmt.Println("8. Initialize Management Branch")
+		fmt.Println("8. Management Branch (Initialize/Actions)")
 		fmt.Println("9. Back")
 		fmt.Print("\n(repos) ==> ")
 
 		choice := readLine(reader)
 		switch choice {
 		case "1":
-			listRepos(database, "user", ownerID)
+			listRepos(database, ownerType, ownerID)
 		case "2":
-			addRepo(database, reader, "user", ownerID, ownerName, repoRoot)
+			addRepo(database, reader, ownerType, ownerID, ownerName, repoRoot)
 		case "3":
 			removeRepo(database, reader, repoRoot)
 		case "4":
@@ -1093,54 +1102,16 @@ func runRepoMenu(database *db.DB, reader *bufio.Reader, ownerID int64, ownerName
 		case "6":
 			configureMirroring(database, reader, repoRoot)
 		case "7":
-			manageDeployKey(reader, "user", ownerName, repoRoot)
+			manageDeployKey(reader, ownerType, ownerName, repoRoot)
 		case "8":
-			setupManagementBranch(database, reader, repoRoot)
+			runManagementMenu(database, reader, repoRoot, ownerName)
 		case "9":
 			return
 		}
 	}
 }
 
-func runOrgRepoMenu(database *db.DB, reader *bufio.Reader, orgID int64, orgName, repoRoot string) {
-	for {
-		fmt.Printf("\n--- Repository Management for Org: %s ---\n", orgName)
-		fmt.Println("1. List Repositories")
-		fmt.Println("2. Create Repository")
-		fmt.Println("3. Delete Repository")
-		fmt.Println("4. Manage Collaborators")
-		fmt.Println("5. Verify Commits (GPG)")
-		fmt.Println("6. Configure Auto-Mirroring")
-		fmt.Println("7. Manage Outbound Deploy Key")
-		fmt.Println("8. Initialize Management Branch")
-		fmt.Println("9. Back")
-		fmt.Print("\n(org-repos) ==> ")
-
-		choice := readLine(reader)
-		switch choice {
-		case "1":
-			listRepos(database, "org", orgID)
-		case "2":
-			addRepo(database, reader, "org", orgID, orgName, repoRoot)
-		case "3":
-			removeRepo(database, reader, repoRoot)
-		case "4":
-			manageCollaborators(database, reader, repoRoot)
-		case "5":
-			verifyRepoCommits(database, reader, repoRoot)
-		case "6":
-			configureMirroring(database, reader, repoRoot)
-		case "7":
-			manageDeployKey(reader, "org", orgName, repoRoot)
-		case "8":
-			setupManagementBranch(database, reader, repoRoot)
-		case "9":
-			return
-		}
-	}
-}
-
-func setupManagementBranch(database *db.DB, reader *bufio.Reader, repoRoot string) {
+func runManagementMenu(database *db.DB, reader *bufio.Reader, repoRoot, currentUser string) {
 	fmt.Print("Enter logical path of repository (e.g. users/alice/myrepo.git): ")
 	logicalPath := readLine(reader)
 	if logicalPath == "" {
@@ -1160,14 +1131,53 @@ func setupManagementBranch(database *db.DB, reader *bufio.Reader, repoRoot strin
 		physicalPath = filepath.Join(repoRoot, "orgs", repo.Path)
 	}
 
-	fmt.Printf("Initializing 'sourcevault' management branch for %q...\n", logicalPath)
-	if err := shell.InitializeSourceVaultBranch(physicalPath); err != nil {
-		fmt.Printf("[ERROR] %v\n", err)
+	for {
+		hasBranch := shell.HasManagementBranch(physicalPath)
+		fmt.Printf("\n--- Management Branch: %s ---\n", logicalPath)
+		if !hasBranch {
+			fmt.Println("1. Initialize Management Branch")
+			fmt.Println("2. Back")
+		} else {
+			fmt.Println("1. Create New Issue")
+			fmt.Println("2. Back")
+		}
+		fmt.Print("\n(mgmt) ==> ")
+
+		choice := readLine(reader)
+		if choice == "2" {
+			return
+		}
+		if choice == "1" {
+			if !hasBranch {
+				fmt.Printf("Initializing 'sourcevault' management branch...\n")
+				if err := shell.InitializeSourceVaultBranch(physicalPath); err != nil {
+					fmt.Printf("[ERROR] %v\n", err)
+				} else {
+					fmt.Println("[OK] Branch created.")
+				}
+			} else {
+				createIssue(physicalPath, reader, currentUser)
+			}
+		}
+	}
+}
+
+func createIssue(absPath string, reader *bufio.Reader, author string) {
+	title := prompt(reader, "Issue Title: ")
+	if title == "" {
 		return
 	}
+	description := prompt(reader, "Description: ")
+	
+	issueID := uuid.New().String()
+	createdAt := time.Now().Format("2006-01-02 15:04:05")
 
-	fmt.Println("[OK] 'sourcevault' orphan branch created successfully.")
-	fmt.Println("     Users can now push/pull to this branch to manage project metadata.")
+	fmt.Printf("Creating issue %s...\n", issueID)
+	if err := shell.CreateIssue(absPath, issueID, title, description, author, createdAt); err != nil {
+		fmt.Printf("[ERROR] %v\n", err)
+	} else {
+		fmt.Printf("[OK] Issue %s created in 'sourcevault' branch.\n", issueID)
+	}
 }
 
 func manageDeployKey(reader *bufio.Reader, ownerType, ownerName, repoRoot string) {

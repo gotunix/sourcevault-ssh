@@ -199,3 +199,87 @@ Files should ideally be in Markdown or YAML format for easy consumption.
 
 	return nil
 }
+
+// HasManagementBranch checks if the 'sourcevault' management branch exists.
+func HasManagementBranch(absPath string) bool {
+	cmd := exec.Command("git", "show-ref", "--verify", "refs/heads/sourcevault")
+	cmd.Dir = absPath
+	return cmd.Run() == nil
+}
+
+// CreateIssue adds a new issue file to the 'sourcevault' branch.
+func CreateIssue(absPath, issueID, title, description, author, createdAt string) error {
+	// 1. Check if branch exists
+	revParse := exec.Command("git", "rev-parse", "--verify", "sourcevault")
+	revParse.Dir = absPath
+	parentCommitBytes, err := revParse.Output()
+	if err != nil {
+		return fmt.Errorf("management branch 'sourcevault' not found - initialize it first")
+	}
+	parentCommit := strings.TrimSpace(string(parentCommitBytes))
+
+	issueContent := fmt.Sprintf(`id: %q
+title: %q
+description: %q
+status: "open"
+author: %q
+created_at: %q
+`, issueID, title, description, author, createdAt)
+
+	// 2. Create blob
+	hashObjectCmd := exec.Command("git", "hash-object", "-w", "--stdin")
+	hashObjectCmd.Dir = absPath
+	hashObjectCmd.Stdin = strings.NewReader(issueContent)
+	blobHashBytes, err := hashObjectCmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to create issue blob: %w", err)
+	}
+	blobHash := strings.TrimSpace(string(blobHashBytes))
+
+	// 3. Get current tree
+	lsTreeCmd := exec.Command("git", "ls-tree", "-r", "sourcevault")
+	lsTreeCmd.Dir = absPath
+	currentEntries, _ := lsTreeCmd.Output()
+
+	// 4. Create new tree entries
+	newEntry := fmt.Sprintf("100644 blob %s\tissues/%s.yaml", blobHash, issueID)
+	
+	treeInput := string(currentEntries)
+	if treeInput != "" && !strings.HasSuffix(treeInput, "\n") {
+		treeInput += "\n"
+	}
+	treeInput += newEntry + "\n"
+
+	mktreeCmd := exec.Command("git", "mktree")
+	mktreeCmd.Dir = absPath
+	mktreeCmd.Stdin = strings.NewReader(treeInput)
+	treeHashBytes, err := mktreeCmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to update tree: %w", err)
+	}
+	treeHash := strings.TrimSpace(string(treeHashBytes))
+
+	// 5. Create commit
+	commitTreeCmd := exec.Command("git", "commit-tree", treeHash, "-p", parentCommit, "-m", fmt.Sprintf("Create issue: %s", title))
+	commitTreeCmd.Dir = absPath
+	commitTreeCmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=SourceVault System",
+		"GIT_AUTHOR_EMAIL=system@sourcevault.local",
+		"GIT_COMMITTER_NAME=SourceVault System",
+		"GIT_COMMITTER_EMAIL=system@sourcevault.local",
+	)
+	newCommitHashBytes, err := commitTreeCmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to create commit: %w", err)
+	}
+	newCommitHash := strings.TrimSpace(string(newCommitHashBytes))
+
+	// 6. Update ref
+	updateRefCmd := exec.Command("git", "update-ref", "refs/heads/sourcevault", newCommitHash)
+	updateRefCmd.Dir = absPath
+	if err := updateRefCmd.Run(); err != nil {
+		return fmt.Errorf("failed to update ref: %w", err)
+	}
+
+	return nil
+}
