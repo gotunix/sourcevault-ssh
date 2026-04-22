@@ -200,12 +200,20 @@ func RunUser(database *db.DB, username string, isAdmin bool) {
 		if isAdmin {
 			fmt.Println(" 10. Enable Admin Mode")
 			fmt.Println(" 11. Exit")
+			fmt.Println("\n  (Admin: you can also run 'sudo <command>' e.g. sudo list users)")
 		} else {
 			fmt.Println(" 10. Exit")
 		}
 		fmt.Print("\n==> ")
 
 		choice := readLine(reader)
+
+		// Handle 'sudo' style commands for admins
+		if isAdmin && strings.HasPrefix(choice, "sudo ") {
+			cmd := strings.TrimPrefix(choice, "sudo ")
+			handleSudo(database, reader, username, cmd, repoRoot)
+			continue
+		}
 
 		// Handle 'enable' command for admins
 		if isAdmin && choice == "enable" {
@@ -626,6 +634,36 @@ func listGPGKeys(database *db.DB, reader *bufio.Reader) {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// handleSudo processes one-off admin commands without switching into the full admin menu.
+func handleSudo(database *db.DB, reader *bufio.Reader, username string, command string, repoRoot string) {
+	// Prompt for password
+	pass := promptPassword("Admin Password: ")
+	valid, err := database.VerifyAdminPassword(username, pass)
+	if err != nil {
+		fmt.Printf("[ERROR] Internal error during verification: %v\n", err)
+		return
+	}
+	if !valid {
+		fmt.Println("[DENIED] Incorrect admin password.")
+		return
+	}
+
+	// Dispatch the command
+	switch command {
+	case "admin_test":
+		fmt.Println("[OK] Sudo verification successful. This is the admin_test command.")
+	case "list users":
+		listUsers(database)
+	case "list orgs":
+		listOrgs(database)
+	case "list repos":
+		listAllRepos(database)
+	default:
+		fmt.Printf("[ERROR] Unknown admin command: %s\n", command)
+		fmt.Println("Available sudo commands: admin_test, list users, list orgs, list repos")
+	}
+}
 
 // prompt prints a prompt string and reads a trimmed line from stdin.
 func prompt(reader *bufio.Reader, text string) string {
