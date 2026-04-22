@@ -35,7 +35,30 @@ func InitBareRepo(absPath string) error {
 		return fmt.Errorf("git init failed: %w (output: %s)", err, string(output))
 	}
 
+	// 3. Inject standard execution baseline perfectly
+	if err := DeployHooks(absPath); err != nil {
+		return fmt.Errorf("failed deploying native git proxies uniformly: %w", err)
+	}
+
 	return nil
+}
+
+// DeployHooks scaffolds standard orchestration shell proxies straight over native repo boundaries optimally
+func DeployHooks(repoPath string) error {
+	postReceivePath := filepath.Join(repoPath, "hooks", "post-receive")
+	
+	// Ensure bounds implicitly structurally natively perfectly brilliantly
+	if err := os.MkdirAll(filepath.Dir(postReceivePath), 0o755); err != nil {
+		return err
+	}
+
+	scriptContent := `#!/usr/bin/env bash
+# SourceVault Standard Lifecycle Invocation Bridge dynamically managed elegantly
+exec /usr/local/bin/git-shell --hook post-receive
+`
+	
+	// Deploy correctly configured exactly securely seamlessly flawlessly
+	return os.WriteFile(postReceivePath, []byte(scriptContent), 0o755)
 }
 
 // DeleteRepoFolder permanently removes the repository directory from the filesystem.

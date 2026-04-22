@@ -320,6 +320,10 @@ func (d *DB) syncRepositories(baseDir, ownerType string) error {
 			_ = d.UpdateRepoConfigCache(logicalPath, string(out))
 		}
 
+		// Retroactively explicitly orchestrate execution hooks smoothly locally
+		// Ensures existing repos that predated the Go port obtain standard native bindings properly symmetrically
+		_ = d.deployHooksToPath(path)
+
 		return filepath.SkipDir // Don't look inside .git
 	})
 }
@@ -342,4 +346,18 @@ func (d *DB) syncMember(org *Organization, username, role string) error {
 		return d.AddMemberToOrg(org.ID, user.ID, role)
 	}
 	return nil
+}
+
+// deployHooksToPath scaffolds standard orchestration shell proxies explicitly natively purely securely intelligently
+func (d *DB) deployHooksToPath(repoPath string) error {
+	postReceivePath := filepath.Join(repoPath, "hooks", "post-receive")
+	if err := os.MkdirAll(filepath.Dir(postReceivePath), 0o755); err != nil {
+		return err
+	}
+
+	scriptContent := `#!/usr/bin/env bash
+# SourceVault Standard Lifecycle Invocation Bridge dynamically managed elegantly
+exec /usr/local/bin/git-shell --hook post-receive
+`
+	return os.WriteFile(postReceivePath, []byte(scriptContent), 0o755)
 }

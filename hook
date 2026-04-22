@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# SourceVault Git Repository Mirror Utility
+# Operates dynamically as a Manual Tool OR an automatic Git Hook!
+
+set -e
+
+# ==========================================================
+# MODE 1: AUTO-HOOK MODE (Zero Arguments)
+# ==========================================================
+# If no arguments are passed, we assume it's running natively inside
+# a .git/hooks/post-commit or post-receive trigger organically!
+if [ "$#" -eq 0 ]; then
+    # 1. Verify we are actively inside a git repository
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "[!] Error: No arguments provided, and not inside a valid Git repository."
+        echo "Usage: $0 [source_url] [destination_url]"
+        exit 1
+    fi
+
+    # 2. Read the designated mirror target natively from this specific repository's config!
+    DEST_URL=$(git config --get mirror.target || true)
+
+    if [ -z "$DEST_URL" ]; then
+        # Silently exit perfectly if this repo isn't configured for mirroring
+        exit 0
+    fi
+
+    echo "[*] SourceVault Auto-Mirror Hook Triggered! Synchronizing to: $DEST_URL"
+
+    # 3. Push to the mirror asynchronously in the background so the user's 
+    # 'git commit' command returns instantly without dragging on network latency!
+    (
+        git push --mirror "$DEST_URL" --quiet
+    ) &
+    
+    exit 0
+fi
+
+# ==========================================================
+# MODE 2: MANUAL ONE-OFF MODE (Two Arguments)
+# ==========================================================
+if [ "$#" -ne 2 ]; then
+    echo "Usage (Manual): $0 <source_git_url> <destination_git_url>"
+    echo "Usage (Hook)  : Copy this cleanly into .git/hooks/post-commit"
+    exit 1
+fi
+
+SOURCE_URL="$1"
+DEST_URL="$2"
+
+# Create a dynamic temporary workspace to prevent local file clutter
+TEMP_DIR=$(mktemp -d -t git-mirror-XXXXXX)
+echo "[*] Created isolated temporary workspace: $TEMP_DIR"
+
+trap 'echo "[*] Cleaning up temporary workspace..."; rm -rf "$TEMP_DIR"' EXIT
+
+cd "$TEMP_DIR"
+
+echo "[*] Extracting bare mirror from source: $SOURCE_URL"
+git clone --mirror "$SOURCE_URL" repo.git
+
+cd repo.git
+
+echo "[*] Synchronizing entire mirror to destination: $DEST_URL"
+git push --mirror "$DEST_URL"
+
+echo "[+] Repository mirrored flawlessly!"

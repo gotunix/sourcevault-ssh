@@ -61,6 +61,7 @@ import (
 
 	"github.com/gotunix/sourcevault-ssh/auth"
 	"github.com/gotunix/sourcevault-ssh/db"
+	"github.com/gotunix/sourcevault-ssh/hooks"
 	"github.com/gotunix/sourcevault-ssh/menu"
 	"github.com/gotunix/sourcevault-ssh/shell"
 	"github.com/gotunix/sourcevault-ssh/version"
@@ -143,6 +144,15 @@ func main() {
 		}
 		log.Printf("[sync] sync complete")
 		os.Exit(0)
+	}
+
+	// ------------------------------------------------------------------
+	// Mode 0c: Hooks Router — sv-shell --hook <hook_name>
+	// ------------------------------------------------------------------
+	// Routes execution through the standalone background sequence natively
+	if len(os.Args) >= 3 && os.Args[1] == "--hook" {
+		hookName := os.Args[2]
+		os.Exit(hooks.Run(hookName))
 	}
 
 	// ------------------------------------------------------------------

@@ -882,7 +882,8 @@ func runRepoMenu(database *db.DB, reader *bufio.Reader, ownerID int64, ownerName
 		fmt.Println("3. Delete Repository")
 		fmt.Println("4. Manage Collaborators")
 		fmt.Println("5. Verify Commits (GPG)")
-		fmt.Println("6. Back")
+		fmt.Println("6. Configure Auto-Mirroring")
+		fmt.Println("7. Back")
 		fmt.Print("\n(repos) ==> ")
 
 		choice := readLine(reader)
@@ -898,6 +899,8 @@ func runRepoMenu(database *db.DB, reader *bufio.Reader, ownerID int64, ownerName
 		case "5":
 			verifyRepoCommits(database, reader, repoRoot)
 		case "6":
+			configureMirroring(database, reader, repoRoot)
+		case "7":
 			return
 		}
 	}
@@ -911,7 +914,8 @@ func runOrgRepoMenu(database *db.DB, reader *bufio.Reader, orgID int64, orgName,
 		fmt.Println("3. Delete Repository")
 		fmt.Println("4. Manage Collaborators")
 		fmt.Println("5. Verify Commits (GPG)")
-		fmt.Println("6. Back")
+		fmt.Println("6. Configure Auto-Mirroring")
+		fmt.Println("7. Back")
 		fmt.Print("\n(org-repos) ==> ")
 
 		choice := readLine(reader)
@@ -927,6 +931,97 @@ func runOrgRepoMenu(database *db.DB, reader *bufio.Reader, orgID int64, orgName,
 		case "5":
 			verifyRepoCommits(database, reader, repoRoot)
 		case "6":
+			configureMirroring(database, reader, repoRoot)
+		case "7":
+			return
+		}
+	}
+}
+
+func configureMirroring(database *db.DB, reader *bufio.Reader, repoRoot string) {
+	fmt.Print("Enter logical path to configure (e.g. users/alice/myrepo.git): ")
+	logicalPath := readLine(reader)
+	if logicalPath == "" {
+		fmt.Println("[CANCELLED]")
+		return
+	}
+
+	repo, err := database.GetRepoByPath(logicalPath)
+	if err != nil || repo == nil {
+		fmt.Println("[ERROR] Repository not found.")
+		return
+	}
+
+	physicalPath := filepath.Join(repoRoot, logicalPath)
+	
+	for {
+		// Calculate current state efficiently seamlessly optimally
+		enabledCmd := exec.Command("git", "config", "--get", "sourcevault.mirror.enabled")
+		enabledCmd.Dir = physicalPath
+		enabledOut, _ := enabledCmd.Output()
+		isEnabled := strings.TrimSpace(string(enabledOut)) == "true"
+		stateLabel := "DISABLED"
+		if isEnabled {
+			stateLabel = "ENABLED"
+		}
+		
+		fmt.Printf("\n--- Auto-Mirroring for %s [%s] ---\n", repo.Name, stateLabel)
+		fmt.Println("1. Toggle Mirroring State")
+		fmt.Println("2. Add Mirror Target")
+		fmt.Println("3. Clear All Targets")
+		fmt.Println("4. List Mirror Targets")
+		fmt.Println("5. Back")
+		fmt.Print("\n(mirror) ==> ")
+
+		choice := readLine(reader)
+		switch choice {
+		case "1":
+			newState := "true"
+			if isEnabled {
+				newState = "false"
+			}
+			cmd := exec.Command("git", "config", "sourcevault.mirror.enabled", newState)
+			cmd.Dir = physicalPath
+			if err := cmd.Run(); err != nil {
+				fmt.Printf("[ERROR] Could not set state natively: %v\n", err)
+			} else {
+				fmt.Println("[OK] Toggled mirror bounds perfectly!")
+			}
+		case "2":
+			fmt.Print("Enter full git mirror target URL: ")
+			target := readLine(reader)
+			if target == "" {
+				continue
+			}
+			cmd := exec.Command("git", "config", "--add", "sourcevault.mirror.target", target)
+			cmd.Dir = physicalPath
+			if err := cmd.Run(); err != nil {
+				fmt.Printf("[ERROR] Could not append explicitly: %v\n", err)
+			} else {
+				fmt.Println("[OK] Successfully mapping new asynchronous webhook mirror!")
+			}
+		case "3":
+			cmd := exec.Command("git", "config", "--unset-all", "sourcevault.mirror.target")
+			cmd.Dir = physicalPath
+			_ = cmd.Run() // Returns exit code 5 natively if cleanly missing exactly organically!
+			fmt.Println("[OK] Purged all internal mirroring targets cleanly natively!")
+		case "4":
+			cmd := exec.Command("git", "config", "--get-all", "sourcevault.mirror.target")
+			cmd.Dir = physicalPath
+			out, _ := cmd.Output()
+			targets := strings.Split(strings.TrimSpace(string(out)), "\n")
+			fmt.Println("\nActive Mirror Targets:")
+			count := 0
+			for _, t := range targets {
+				if strings.TrimSpace(t) != "" {
+					fmt.Printf(" - %s\n", t)
+					count++
+				}
+			}
+			if count == 0 {
+				fmt.Println(" (no targets configured natively)")
+			}
+		case "5":
 			return
 		}
 	}
