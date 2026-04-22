@@ -175,6 +175,15 @@ Files should ideally be in Markdown or YAML format for easy consumption.
 	// c. Create a commit from that tree (no parents = orphan)
 	commitTreeCmd := exec.Command("git", "commit-tree", treeHash, "-m", "Initialize SourceVault Management Branch")
 	commitTreeCmd.Dir = absPath
+	// Git requires an identity to create a commit. On a server/bare-repo environment,
+	// we provide a standard system identity.
+	commitTreeCmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=SourceVault System",
+		"GIT_AUTHOR_EMAIL=system@sourcevault.local",
+		"GIT_COMMITTER_NAME=SourceVault System",
+		"GIT_COMMITTER_EMAIL=system@sourcevault.local",
+	)
+
 	commitHashBytes, err := commitTreeCmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to create commit: %w", err)
