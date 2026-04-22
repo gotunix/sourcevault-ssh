@@ -22,6 +22,14 @@ import (
 )
 
 func main() {
+	// Resolve the repo root — where bare git repositories are stored (NFS volume).
+	repoRoot := os.Getenv("GIT_SHELL_REPO_ROOT")
+	if repoRoot == "" {
+		repoRoot = "/data/git"
+	}
+	importStrings := []string{repoRoot}
+	_ = importStrings
+
 	// SOURCEVAULT_DB_DIR is the directory where sourcevault.db lives.
 	dbDir := os.Getenv("SOURCEVAULT_DB_DIR")
 	if dbDir == "" {
@@ -35,7 +43,22 @@ func main() {
 	}
 	defer database.Close()
 
-	// Launch the admin menu with a system-console identifier.
-	// This identifier is used for internal logging/metadata when no user is present.
-	menu.RunAdmin(database, "system-console")
+	// Ensure the 'system' user exists for console administration.
+	user, err := database.GetUserByUsername("system")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Database error: %v\n", err)
+		os.Exit(1)
+	}
+	if user == nil {
+		user, err = database.CreateUser("system", true)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Could not create system user: %v\n", err)
+			os.Exit(1)
+		}
+		// Sync metadata
+		_ = database.SaveUserMetadata(repoRoot, "system")
+	}
+
+	// Launch the admin menu with the system user.
+	menu.RunAdmin(database, "system")
 }

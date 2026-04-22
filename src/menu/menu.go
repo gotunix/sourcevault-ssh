@@ -64,8 +64,33 @@ func RunAdmin(database *db.DB, currentUser string) {
 	}
 	repoRoot = strings.TrimRight(repoRoot, "/")
 
+	user, err := database.GetUserByUsername(currentUser)
+	if err == nil && user != nil && !user.AdminPasswordSet {
+		fmt.Printf("\n[!] Setup required: Please generate an admin password for '%s'.\n", currentUser)
+		for {
+			pass := promptPassword("Enter new admin password: ")
+			if len(pass) < 8 {
+				fmt.Println("[ERROR] Password must be at least 8 characters.")
+				continue
+			}
+			confirm := promptPassword("Confirm admin password: ")
+			if pass != confirm {
+				fmt.Println("[ERROR] Passwords do not match.")
+				continue
+			}
+			if err := database.SetAdminPassword(currentUser, pass); err != nil {
+				fmt.Printf("[ERROR] Could not set admin password: %v\n", err)
+				continue
+			}
+			_ = database.SaveUserMetadata(repoRoot, currentUser)
+			fmt.Println("[OK] Admin password generated successfully.")
+			user.AdminPasswordSet = true
+			break
+		}
+	}
+
 	fmt.Println("╔══════════════════════════════════════╗")
-	fmt.Println("║     SourceVault SSH — Admin Menu     ║")
+	fmt.Printf("║  SourceVault SSH — Admin Menu (%-5s) ║\n", currentUser)
 	fmt.Println("╚══════════════════════════════════════╝")
 
 	for {
@@ -88,39 +113,90 @@ func RunAdmin(database *db.DB, currentUser string) {
 		fmt.Println(" 16. List All Repositories")
 		fmt.Println(" 17. Version")
 		fmt.Println(" 18. Exit")
+		fmt.Println("\n  (Admin: most actions require 'sudo <number>' for elevation)")
 		fmt.Print("\n==> ")
 
 		choice := readLine(reader)
+		isSudo := strings.HasPrefix(choice, "sudo ")
+		if isSudo {
+			choice = strings.TrimPrefix(choice, "sudo ")
+		}
+
+		// Helper to verify sudo
+		verify := func() bool {
+			if !isSudo {
+				fmt.Println("[DENIED] This action requires elevation. Use 'sudo <number>'.")
+				return false
+			}
+			pass := promptPassword("Admin Password: ")
+			valid, err := database.VerifyAdminPassword(currentUser, pass)
+			if err != nil {
+				fmt.Printf("[ERROR] Internal error: %v\n", err)
+				return false
+			}
+			if !valid {
+				fmt.Println("[DENIED] Incorrect admin password.")
+				return false
+			}
+			return true
+		}
+
+		if isSudo && choice == "sudo_test" {
+			if verify() {
+				fmt.Println("[OK] Sudo verification successful.")
+			}
+			continue
+		}
 
 		switch choice {
 		case "1":
 			listUsers(database)
 		case "2":
-			addUser(database, reader, repoRoot)
+			if verify() {
+				addUser(database, reader, repoRoot)
+			}
 		case "3":
-			removeUser(database, reader, repoRoot)
+			if verify() {
+				removeUser(database, reader, repoRoot)
+			}
 		case "4":
-			toggleAdmin(database, reader, repoRoot)
+			if verify() {
+				toggleAdmin(database, reader, repoRoot)
+			}
 		case "5":
-			addKey(database, reader)
+			if verify() {
+				addKey(database, reader)
+			}
 		case "6":
-			removeKey(database, reader)
+			if verify() {
+				removeKey(database, reader)
+			}
 		case "7":
 			listKeys(database, reader)
 		case "8":
-			addGPGKey(database, reader)
+			if verify() {
+				addGPGKey(database, reader)
+			}
 		case "9":
-			removeGPGKey(database, reader)
+			if verify() {
+				removeGPGKey(database, reader)
+			}
 		case "10":
 			listGPGKeys(database, reader)
 		case "11":
 			listCAs(database)
 		case "12":
-			addCA(database, reader)
+			if verify() {
+				addCA(database, reader)
+			}
 		case "13":
-			removeCA(database, reader)
+			if verify() {
+				removeCA(database, reader)
+			}
 		case "14":
-			runOrgMenu(database, reader, repoRoot, currentUser)
+			if verify() {
+				runOrgMenu(database, reader, repoRoot, currentUser)
+			}
 		case "15":
 			listOrgs(database)
 		case "16":
