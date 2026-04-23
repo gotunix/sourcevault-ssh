@@ -32,7 +32,7 @@ RUN ./configure \
 
 # Stage 2: Build Golang Orchestrator
 # Source lives under src/ for a clean separation of Docker infra and Go code.
-FROM golang:1.22-bullseye AS go-builder
+FROM golang:1.25-bullseye AS go-builder
 WORKDIR /app
 # Copy all source first — go mod tidy needs to see the actual imports
 # across all packages before it can generate a complete go.sum.
