@@ -16,7 +16,7 @@ ARG OPENSSH_VERSION=10.3p1
 RUN wget -qO- https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${OPENSSH_VERSION}.tar.gz | tar -xzf - -C /tmp
 WORKDIR /tmp/openssh-${OPENSSH_VERSION}
 
-RUN sed -i 's/OpenSSH_9.8/SourceVault_SSH_1.0/g' version.h
+#RUN sed -i "s/OpenSSH_$(echo $OPENSSH_VERSION | cut -d'p' -f1)/SourceVault_SSH_1.0/g" version.h
 
 RUN ./configure \
     --prefix=/usr \
