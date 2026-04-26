@@ -11,7 +11,8 @@ RUN apt-get update && apt-get install -y \
     make \
     && rm -rf /var/lib/apt/lists/*
 
-ARG OPENSSH_VERSION=9.8p1
+#ARG OPENSSH_VERSION=9.8p1
+ARG OPENSSH_VERSION=10.3p1
 RUN wget -qO- https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${OPENSSH_VERSION}.tar.gz | tar -xzf - -C /tmp
 WORKDIR /tmp/openssh-${OPENSSH_VERSION}
 
