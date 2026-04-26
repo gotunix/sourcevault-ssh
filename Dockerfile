@@ -71,6 +71,9 @@ COPY --from=openssh-builder /etc/ssh/sshd_config /etc/ssh/sshd_config
 COPY --from=openssh-builder /etc/ssh/ssh_config /etc/ssh/ssh_config
 COPY --from=openssh-builder /usr/bin/ssh-keygen /usr/bin/ssh-keygen
 COPY --from=openssh-builder /usr/libexec/sshd-session /usr/libexec/sshd-session
+COPY --from=openssh-builder /usr/libexec/sshd-auth /usr/libexec/sshd-auth
+COPY --from=openssh-builder /usr/libexec/ssh-pkcs11-helper /usr/libexec/ssh-pkcs11-helper
+COPY --from=openssh-builder /usr/libexec/ssh-sk-helper /usr/libexec/ssh-sk-helper
 
 # Copy compiled Golang Orchestrator payload seamlessly exactly perfectly logically natively brilliantly organically properly naturally
 COPY --from=go-builder /app/sv-shell /usr/local/bin/git-shell

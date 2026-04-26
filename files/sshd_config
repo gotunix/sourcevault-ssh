@@ -22,7 +22,7 @@ PrintMotd no
 PrintLastLog yes
 
 AcceptEnv LANG LC_*
-Subsystem   sftp    /usr/lib/openssh/sftp-server
+Subsystem   sftp    /usr/libexec/sftp-server
 # Dynamically resolve SSH keys against the SourceVault SQLite database.
 # sshd calls sv-shell with the connecting key's SHA256 fingerprint.
 # sv-shell writes the authorized_keys line (including ForceCommand and env vars)
