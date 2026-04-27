@@ -17,8 +17,8 @@ RUN wget -qO- https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-${OPE
 WORKDIR /tmp/openssh-${OPENSSH_VERSION}
 
 RUN export VER=$(echo $OPENSSH_VERSION | cut -d'p' -f1) && \
-    sed -i "s/SSH_VERSION\t\"OpenSSH_.*\t\"OpenSSH_${VER}-SourceVault-SSHD\"/" version.h && \
-    sed -i "s/SSH_PORTABLE\t\"p1\"/SSH_PORTABLE\t\"\"/" version.h
+    sed -i "s/SSH_VERSION[[:space:]]*\"OpenSSH_.*\"/SSH_VERSION \"OpenSSH_${VER}-SourceVault-SSHD\"/" version.h && \
+    sed -i 's/SSH_PORTABLE[[:space:]]*"p1"/SSH_PORTABLE ""/' version.h
 
 RUN ./configure \
     --prefix=/usr \
