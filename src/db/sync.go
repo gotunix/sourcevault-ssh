@@ -35,8 +35,7 @@ type UserMetadata struct {
 	CreatedAt         string `yaml:"created_at"`
 }
 
-// OrgMetadata represents the "Git First" source of truth stored on the filesystem.
-// It allows recovering organization memberships if the SQLite database is lost.
+// OrgMetadata represents the "Git First" source of truth stored in the registry.
 type OrgMetadata struct {
 	Name        string   `yaml:"name"`
 	UUID        string   `yaml:"uuid"`
@@ -46,9 +45,14 @@ type OrgMetadata struct {
 	Users       map[string]string `yaml:"users"` // username: role
 }
 
-// SaveUserMetadata writes the user's account state to a metadata file
-// on the filesystem (user.yaml) inside the user's root folder.
-func (d *DB) SaveUserMetadata(repoRoot, username string) error {
+// SaveUserMetadata writes the user's account state to a metadata file in the registry.
+func (d *DB) SaveUserMetadata(username string) error {
+	localPath, err := d.EnsureRegistry()
+	if err != nil {
+		return err
+	}
+	_ = d.pullRegistry(localPath)
+
 	user, err := d.GetUserByUsername(username)
 	if err != nil {
 		return err
@@ -67,29 +71,56 @@ func (d *DB) SaveUserMetadata(repoRoot, username string) error {
 		CreatedAt:         user.CreatedAt,
 	}
 
-	userDir := filepath.Join(repoRoot, "users", username)
+	userDir := filepath.Join(localPath, "users")
 	if err := os.MkdirAll(userDir, 0o750); err != nil {
-		return fmt.Errorf("creating user directory: %w", err)
+		return fmt.Errorf("creating users directory: %w", err)
 	}
 
-	metaPath := filepath.Join(userDir, "user.yaml")
+	metaPath := filepath.Join(userDir, user.UUID+".yaml")
 	data, err := yaml.Marshal(metadata)
 	if err != nil {
 		return fmt.Errorf("marshalling metadata: %w", err)
 	}
 
-	return os.WriteFile(metaPath, data, 0o640)
+	if err := os.WriteFile(metaPath, data, 0o640); err != nil {
+		return err
+	}
+
+	return d.commitAndPushRegistry(localPath, "Update user: "+username)
 }
 
-// RemoveUserMetadata deletes the metadata file from the filesystem.
-func (d *DB) RemoveUserMetadata(repoRoot, username string) error {
-	metaPath := filepath.Join(repoRoot, "users", username, "user.yaml")
-	return os.Remove(metaPath)
+// RemoveUserMetadata deletes the metadata file from the registry.
+func (d *DB) RemoveUserMetadata(username string) error {
+	localPath, err := d.EnsureRegistry()
+	if err != nil {
+		return err
+	}
+	_ = d.pullRegistry(localPath)
+
+	user, err := d.GetUserByUsername(username)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return nil
+	}
+
+	metaPath := filepath.Join(localPath, "users", user.UUID+".yaml")
+	if err := os.Remove(metaPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	return d.commitAndPushRegistry(localPath, "Remove user: "+username)
 }
 
-// SaveOrgMetadata writes the organization's membership list to a metadata file
-// on the filesystem (org.yaml) inside the organization's root folder.
-func (d *DB) SaveOrgMetadata(repoRoot, orgName string) error {
+// SaveOrgMetadata writes the organization's membership list to a metadata file in the registry.
+func (d *DB) SaveOrgMetadata(orgName string) error {
+	localPath, err := d.EnsureRegistry()
+	if err != nil {
+		return err
+	}
+	_ = d.pullRegistry(localPath)
+
 	org, err := d.GetOrgByName(orgName)
 	if err != nil {
 		return err
@@ -119,12 +150,12 @@ func (d *DB) SaveOrgMetadata(repoRoot, orgName string) error {
 		}
 	}
 
-	orgDir := filepath.Join(repoRoot, "orgs", orgName)
+	orgDir := filepath.Join(localPath, "orgs")
 	if err := os.MkdirAll(orgDir, 0o750); err != nil {
-		return fmt.Errorf("creating org directory: %w", err)
+		return fmt.Errorf("creating orgs directory: %w", err)
 	}
 
-	metaPath := filepath.Join(orgDir, "org.yaml")
+	metaPath := filepath.Join(orgDir, org.UUID+".yaml")
 	data, err := yaml.Marshal(metadata)
 	if err != nil {
 		return fmt.Errorf("marshalling metadata: %w", err)
@@ -135,32 +166,39 @@ func (d *DB) SaveOrgMetadata(repoRoot, orgName string) error {
 		return fmt.Errorf("caching metadata in db: %w", err)
 	}
 
-	return os.WriteFile(metaPath, data, 0o640)
+	if err := os.WriteFile(metaPath, data, 0o640); err != nil {
+		return err
+	}
+
+	return d.commitAndPushRegistry(localPath, "Update organization: "+orgName)
 }
 
-// SyncFromFilesystem scans the repository root for user and organization metadata files
+// SyncFromRegistry scans the registry for user and organization metadata files
 // and reconstructs the database state. This is the "Recovery" path.
-func (d *DB) SyncFromFilesystem(repoRoot string) error {
-	userDir := filepath.Join(repoRoot, "users")
-	
+func (d *DB) SyncFromRegistry() error {
+	localPath, err := d.EnsureRegistry()
+	if err != nil {
+		return err
+	}
+	_ = d.pullRegistry(localPath)
+
 	// 1. Sync Users
-	if err := d.syncUsers(userDir); err != nil {
+	if err := d.syncUsers(filepath.Join(localPath, "users")); err != nil {
 		return err
 	}
 
 	// 2. Sync Organizations
-	orgsDir := filepath.Join(repoRoot, "orgs")
-	if err := d.syncOrganizations(orgsDir); err != nil {
+	if err := d.syncOrganizations(filepath.Join(localPath, "orgs")); err != nil {
 		return err
 	}
 
-	// 3. Sync Personal Repositories (users/<username>/<repo>.git)
-	if err := d.syncRepositories(userDir, "user"); err != nil {
+	// 3. Sync Personal Repositories (walking repoRoot/users/<username>/<repo>.git)
+	if err := d.syncRepositories(filepath.Join(d.RepoRoot, "users"), "user"); err != nil {
 		return err
 	}
 
-	// 4. Sync Organization Repositories (orgs/<org>/<repo>.git)
-	if err := d.syncRepositories(orgsDir, "org"); err != nil {
+	// 4. Sync Organization Repositories (walking repoRoot/orgs/<org>/<repo>.git)
+	if err := d.syncRepositories(filepath.Join(d.RepoRoot, "orgs"), "org"); err != nil {
 		return err
 	}
 
@@ -177,12 +215,11 @@ func (d *DB) syncUsers(usersDir string) error {
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
 			continue
 		}
 
-		username := entry.Name()
-		metaPath := filepath.Join(usersDir, username, "user.yaml")
+		metaPath := filepath.Join(usersDir, entry.Name())
 		data, err := os.ReadFile(metaPath)
 		if err != nil {
 			continue
@@ -193,12 +230,12 @@ func (d *DB) syncUsers(usersDir string) error {
 			continue
 		}
 
-		user, err := d.GetUserByUsername(username)
+		user, err := d.GetUserByUsername(metadata.Username)
 		if err != nil {
 			return err
 		}
 		if user == nil {
-			log.Printf("[sync] Re-creating user: %s", username)
+			log.Printf("[sync] Re-creating user: %s", metadata.Username)
 			_, err = d.RestoreUser(metadata.ID, metadata.UUID, metadata.Username, metadata.IsAdmin, metadata.AdminPasswordHash, metadata.AdminPasswordSet, metadata.CreatedAt)
 			if err != nil {
 				return err
@@ -224,12 +261,11 @@ func (d *DB) syncOrganizations(orgsDir string) error {
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
 			continue
 		}
 
-		orgName := entry.Name()
-		metaPath := filepath.Join(orgsDir, orgName, "org.yaml")
+		metaPath := filepath.Join(orgsDir, entry.Name())
 		data, err := os.ReadFile(metaPath)
 		if err != nil {
 			continue
@@ -240,13 +276,13 @@ func (d *DB) syncOrganizations(orgsDir string) error {
 			continue
 		}
 
-		org, err := d.GetOrgByName(orgName)
+		org, err := d.GetOrgByName(metadata.Name)
 		if err != nil {
 			return err
 		}
 		if org == nil {
-			log.Printf("[sync] Re-creating organization: %s", orgName)
-			org, err = d.CreateOrg(orgName, metadata.UUID, metadata.Description)
+			log.Printf("[sync] Re-creating organization: %s", metadata.Name)
+			org, err = d.CreateOrg(metadata.Name, metadata.UUID, metadata.Description)
 			if err != nil {
 				return err
 			}

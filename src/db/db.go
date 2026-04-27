@@ -93,7 +93,6 @@ type TrustedCA struct {
 	Fingerprint string
 	KeyType     string
 	KeyData     string
-	IsAdmin     bool
 	CreatedAt   string
 }
 
@@ -137,12 +136,14 @@ type AccessibleRepo struct {
 
 // DB wraps the SQLite connection and exposes domain-level operations.
 type DB struct {
-	conn *sql.DB
+	conn     *sql.DB
+	DataDir  string
+	RepoRoot string
 }
 
 // Open opens (or creates) the SQLite database at dataDir/sourcevault.db
 // and runs schema migrations. Safe to call multiple times.
-func Open(dataDir string) (*DB, error) {
+func Open(dataDir, repoRoot string) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("creating data dir %q: %w", dataDir, err)
 	}
@@ -159,7 +160,11 @@ func Open(dataDir string) (*DB, error) {
 		return nil, fmt.Errorf("enabling foreign keys: %w", err)
 	}
 
-	db := &DB{conn: conn}
+	db := &DB{
+		conn:     conn,
+		DataDir:  dataDir,
+		RepoRoot: repoRoot,
+	}
 	if err := db.migrate(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
@@ -555,14 +560,10 @@ func (d *DB) RemoveKeyByFingerprint(fingerprint string) error {
 // ---------------------------------------------------------------------------
 
 // AddTrustedCA registers a new trusted CA public key.
-func (d *DB) AddTrustedCA(name, fingerprint, keyType, keyData string, isAdmin bool) (*TrustedCA, error) {
-	admin := 0
-	if isAdmin {
-		admin = 1
-	}
+func (d *DB) AddTrustedCA(name, fingerprint, keyType, keyData string) (*TrustedCA, error) {
 	res, err := d.conn.Exec(
-		`INSERT INTO trusted_cas (name, fingerprint, key_type, key_data, is_admin) VALUES (?, ?, ?, ?, ?)`,
-		name, fingerprint, keyType, keyData, admin,
+		`INSERT INTO trusted_cas (name, fingerprint, key_type, key_data) VALUES (?, ?, ?, ?)`,
+		name, fingerprint, keyType, keyData,
 	)
 	if err != nil {
 		return nil, err
@@ -570,14 +571,14 @@ func (d *DB) AddTrustedCA(name, fingerprint, keyType, keyData string, isAdmin bo
 	id, _ := res.LastInsertId()
 	return &TrustedCA{
 		ID: id, Name: name, Fingerprint: fingerprint,
-		KeyType: keyType, KeyData: keyData, IsAdmin: isAdmin,
+		KeyType: keyType, KeyData: keyData,
 	}, nil
 }
 
 // ListTrustedCAs returns all trusted CAs ordered by name.
 func (d *DB) ListTrustedCAs() ([]TrustedCA, error) {
 	rows, err := d.conn.Query(
-		`SELECT id, name, fingerprint, key_type, key_data, is_admin, created_at FROM trusted_cas ORDER BY name`,
+		`SELECT id, name, fingerprint, key_type, key_data, created_at FROM trusted_cas ORDER BY name`,
 	)
 	if err != nil {
 		return nil, err
@@ -587,11 +588,9 @@ func (d *DB) ListTrustedCAs() ([]TrustedCA, error) {
 	var cas []TrustedCA
 	for rows.Next() {
 		var ca TrustedCA
-		var isAdmin int
-		if err := rows.Scan(&ca.ID, &ca.Name, &ca.Fingerprint, &ca.KeyType, &ca.KeyData, &isAdmin, &ca.CreatedAt); err != nil {
+		if err := rows.Scan(&ca.ID, &ca.Name, &ca.Fingerprint, &ca.KeyType, &ca.KeyData, &ca.CreatedAt); err != nil {
 			return nil, err
 		}
-		ca.IsAdmin = isAdmin == 1
 		cas = append(cas, ca)
 	}
 	return cas, nil
@@ -600,12 +599,11 @@ func (d *DB) ListTrustedCAs() ([]TrustedCA, error) {
 // LookupCAByFingerprint finds a trusted CA by its SHA256 fingerprint.
 func (d *DB) LookupCAByFingerprint(fingerprint string) (*TrustedCA, error) {
 	var ca TrustedCA
-	var isAdmin int
 	err := d.conn.QueryRow(`
-		SELECT id, name, fingerprint, key_type, key_data, is_admin, created_at
+		SELECT id, name, fingerprint, key_type, key_data, created_at
 		FROM trusted_cas WHERE fingerprint = ?
 	`, fingerprint).Scan(
-		&ca.ID, &ca.Name, &ca.Fingerprint, &ca.KeyType, &ca.KeyData, &isAdmin, &ca.CreatedAt,
+		&ca.ID, &ca.Name, &ca.Fingerprint, &ca.KeyType, &ca.KeyData, &ca.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -613,7 +611,6 @@ func (d *DB) LookupCAByFingerprint(fingerprint string) (*TrustedCA, error) {
 	if err != nil {
 		return nil, err
 	}
-	ca.IsAdmin = isAdmin == 1
 	return &ca, nil
 }
 

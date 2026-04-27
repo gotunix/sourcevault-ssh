@@ -83,7 +83,7 @@ func RunAdmin(database *db.DB, currentUser string) {
 				fmt.Printf("[ERROR] Could not set admin password: %v\n", err)
 				continue
 			}
-			_ = database.SaveUserMetadata(repoRoot, currentUser)
+			_ = database.SaveUserMetadata(currentUser)
 			fmt.Println("[OK] Admin password generated successfully.")
 			user.AdminPasswordSet = true
 			break
@@ -252,7 +252,7 @@ func RunUser(database *db.DB, username string, isAdmin bool) {
 				fmt.Printf("[ERROR] Could not set admin password: %v\n", err)
 				continue
 			}
-			_ = database.SaveUserMetadata(repoRoot, username)
+			_ = database.SaveUserMetadata(username)
 			fmt.Println("[OK] Admin password generated successfully.")
 			user.AdminPasswordSet = true
 			break
@@ -397,7 +397,7 @@ func addUser(database *db.DB, reader *bufio.Reader, repoRoot string) {
 	}
 
 	// Persist mapping sync YAMLs natively
-	_ = database.SaveUserMetadata(repoRoot, username)
+	_ = database.SaveUserMetadata(username)
 
 	fmt.Printf("[OK] User %q created (admin=%v)\n", username, isAdmin)
 }
@@ -424,7 +424,7 @@ func removeUser(database *db.DB, reader *bufio.Reader, repoRoot string) {
 	}
 
 	// Drop YAML bindings
-	_ = database.RemoveUserMetadata(repoRoot, username)
+	_ = database.RemoveUserMetadata(username)
 
 	fmt.Printf("[OK] User %q and all associated keys removed.\n", username)
 }
@@ -452,7 +452,7 @@ func toggleAdmin(database *db.DB, reader *bufio.Reader, repoRoot string) {
 	}
 
 	// Persist mapping sync YAMLs natively
-	_ = database.SaveUserMetadata(repoRoot, username)
+	_ = database.SaveUserMetadata(username)
 
 	status := "revoked"
 	if newAdmin {
@@ -991,14 +991,10 @@ func listCAs(database *db.DB) {
 		fmt.Println("  (no trusted CAs registered)")
 		return
 	}
-	fmt.Printf("\n  %-20s  %-8s  %s\n", "CA Name", "Admin", "Fingerprint")
+	fmt.Printf("\n  %-20s  %s\n", "CA Name", "Fingerprint")
 	fmt.Println("  " + strings.Repeat("─", 80))
 	for _, ca := range cas {
-		admin := "no"
-		if ca.IsAdmin {
-			admin = "yes"
-		}
-		fmt.Printf("  %-20s  %-8s  %s\n", ca.Name, admin, ca.Fingerprint)
+		fmt.Printf("  %-20s  %s\n", ca.Name, ca.Fingerprint)
 	}
 }
 
@@ -1009,9 +1005,6 @@ func addCA(database *db.DB, reader *bufio.Reader) {
 		fmt.Println("[CANCELLED]")
 		return
 	}
-
-	adminStr := prompt(reader, "Treat all certs from this CA as admins? (yes/no): ")
-	isAdmin := strings.ToLower(adminStr) == "yes"
 
 	fmt.Println("Paste the CA public key line (ssh-ed25519 AAAA... comment):")
 	fmt.Print("> ")
@@ -1033,12 +1026,12 @@ func addCA(database *db.DB, reader *bufio.Reader) {
 		return
 	}
 
-	if _, err := database.AddTrustedCA(name, fingerprint, keyType, keyData, isAdmin); err != nil {
+	if _, err := database.AddTrustedCA(name, fingerprint, keyType, keyData); err != nil {
 		fmt.Printf("[ERROR] Could not add CA (duplicate name or key?): %v\n", err)
 		return
 	}
 
-	fmt.Printf("[OK] CA %q added (admin=%v)\n  Fingerprint: %s\n", name, isAdmin, fingerprint)
+	fmt.Printf("[OK] CA %q added.\n  Fingerprint: %s\n", name, fingerprint)
 }
 
 // removeCA prompts for a CA name and deletes it.
@@ -1787,7 +1780,7 @@ func addOrg(database *db.DB, reader *bufio.Reader, repoRoot, currentUser string)
 	}
 
 	if repoRoot != "" {
-		if err := database.SaveOrgMetadata(repoRoot, name); err != nil {
+		if err := database.SaveOrgMetadata(name); err != nil {
 			fmt.Printf("[WARNING] DB updated but filesystem sync failed: %v\n", err)
 		}
 	}
@@ -1864,7 +1857,7 @@ func manageOrgMembers(database *db.DB, reader *bufio.Reader, repoRoot string) {
 			} else {
 				fmt.Println("Member added.")
 				if repoRoot != "" {
-					database.SaveOrgMetadata(repoRoot, org.Name)
+					database.SaveOrgMetadata(org.Name)
 				}
 			}
 		case "2":
@@ -1881,7 +1874,7 @@ func manageOrgMembers(database *db.DB, reader *bufio.Reader, repoRoot string) {
 			} else {
 				fmt.Println("Member removed.")
 				if repoRoot != "" {
-					database.SaveOrgMetadata(repoRoot, org.Name)
+					database.SaveOrgMetadata(org.Name)
 				}
 			}
 		case "3":

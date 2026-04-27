@@ -97,7 +97,7 @@ func main() {
 	// BOOTSTRAP_ADMIN_KEY. Exits immediately — never reached via sshd.
 	if len(os.Args) == 2 && os.Args[1] == "--bootstrap" {
 		log.Printf("[bootstrap] startup mode — dbDir=%s", dbDir)
-		database, err := openDB(dbDir)
+		database, err := openDB(dbDir, repoRoot)
 		if err != nil {
 			log.Printf("[bootstrap] FATAL: could not open db: %v", err)
 			os.Exit(1)
@@ -130,15 +130,15 @@ func main() {
 	// Synchronizes organization metadata from the filesystem into the database.
 	// This is the "Recovery" path if the database is lost.
 	if len(os.Args) == 2 && os.Args[1] == "--sync" {
-		database, err := openDB(dbDir)
+		database, err := openDB(dbDir, repoRoot)
 		if err != nil {
 			log.Printf("[sync] FATAL: could not open db: %v", err)
 			os.Exit(1)
 		}
 		defer database.Close()
 
-		log.Printf("[sync] starting filesystem sync from %s...", repoRoot)
-		if err := database.SyncFromFilesystem(repoRoot); err != nil {
+		log.Printf("[sync] starting registry sync from _registry.git...")
+		if err := database.SyncFromRegistry(); err != nil {
 			log.Printf("[sync] ERROR: %v", err)
 			os.Exit(1)
 		}
@@ -164,7 +164,7 @@ func main() {
 		fingerprint := os.Args[2]
 		log.Printf("[key-resolver] invoked — fingerprint=%s dbDir=%s", fingerprint, dbDir)
 
-		database, err := openDB(dbDir)
+		database, err := openDB(dbDir, repoRoot)
 		if err != nil {
 			log.Printf("[key-resolver] FATAL: could not open db at %s: %v", dbDir, err)
 			fmt.Fprintf(os.Stderr, "[sourcevault-ssh] db error: %v\n", err)
@@ -190,7 +190,7 @@ func main() {
 	if origCmd != "" {
 		fmt.Fprintf(os.Stderr, "SourceVault SSH v%s\n", version.Version)
 
-		database, err := openDB(dbDir)
+		database, err := openDB(dbDir, repoRoot)
 		if err != nil {
 			log.Printf("Internal error: could not open database: %v", err)
 			fmt.Fprintf(os.Stderr, "Forbidden: internal error.\n")
@@ -230,7 +230,7 @@ func main() {
 	// Mode 3: Interactive SSH session — no git command was sent
 	// ------------------------------------------------------------------
 	fmt.Fprintf(os.Stderr, "%s v%s\n", version.AppName, version.Version)
-	database, err := openDB(dbDir)
+	database, err := openDB(dbDir, repoRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Internal error: could not open database: %v\n", err)
 		os.Exit(1)
@@ -264,8 +264,8 @@ func main() {
 
 // openDB opens the SQLite database at the given directory path.
 // The directory must be on a local volume — SQLite does not work correctly over NFS.
-func openDB(dbDir string) (*db.DB, error) {
-	return db.Open(dbDir)
+func openDB(dbDir, repoRoot string) (*db.DB, error) {
+	return db.Open(dbDir, repoRoot)
 }
 
 // maybeBootstrap seeds the first admin user if the database is empty.
@@ -312,7 +312,7 @@ func maybeBootstrap(database *db.DB, adminUser, repoRoot string) error {
 		return fmt.Errorf("registering bootstrap admin key: %w", err)
 	}
 
-	_ = database.SaveUserMetadata(repoRoot, adminUser)
+	_ = database.SaveUserMetadata(adminUser)
 
 	log.Printf("[bootstrap] SUCCESS — admin user %q created, key registered: %s", adminUser, fingerprint)
 	return nil
@@ -326,13 +326,12 @@ func maybeBootstrapCA(database *db.DB) error {
 		return nil
 	}
 
-	isAdmin := os.Getenv("BOOTSTRAP_CA_IS_ADMIN") == "true"
 	caName := os.Getenv("BOOTSTRAP_CA_NAME")
 	if caName == "" {
 		caName = "InitialCA"
 	}
 
-	log.Printf("[bootstrap] Attempting to trust CA: name=%q isAdmin=%v key_len=%d", caName, isAdmin, len(caKey))
+	log.Printf("[bootstrap] Attempting to trust CA: name=%q key_len=%d", caName, len(caKey))
 
 	keyType, keyData, _, err := db.ParsePublicKeyLine(caKey)
 	if err != nil {
@@ -357,7 +356,7 @@ func maybeBootstrapCA(database *db.DB) error {
 	}
 
 	log.Printf("[bootstrap] CA not found in DB, registering now...")
-	if _, err := database.AddTrustedCA(caName, fingerprint, keyType, keyData, isAdmin); err != nil {
+	if _, err := database.AddTrustedCA(caName, fingerprint, keyType, keyData); err != nil {
 		return fmt.Errorf("registering bootstrap CA into DB failed: %w", err)
 	}
 

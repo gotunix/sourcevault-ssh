@@ -85,8 +85,14 @@ func ResolveFromAuthInfo(authInfoPath string, database *db.DB, repoRoot string) 
 		}
 
 		// 4. Determine admin status.
-		// A certificate makes a user an admin if the CA itself is an "Admin CA".
-		isAdmin := ca.IsAdmin
+		// A certificate makes a user an admin if it contains the 'admin' principal.
+		isAdmin := false
+		for _, p := range cert.ValidPrincipals {
+			if p == "admin" {
+				isAdmin = true
+				break
+			}
+		}
 
 		// 5. JIT Provisioning.
 		// Check if the user exists in the database. If not, create them.
@@ -107,7 +113,7 @@ func ResolveFromAuthInfo(authInfoPath string, database *db.DB, repoRoot string) 
 			}
 			
 			// Persist JIT-created user out to GitOps YAML mapping
-			_ = database.SaveUserMetadata(repoRoot, username)
+			_ = database.SaveUserMetadata(username)
 
 			fmt.Fprintf(os.Stderr, "[auth] Auto-provisioned new user: %s (isAdmin=%v)\n", username, isAdmin)
 		} else {
@@ -119,7 +125,7 @@ func ResolveFromAuthInfo(authInfoPath string, database *db.DB, repoRoot string) 
 				}
 				
 				// Persist promotion mapping
-				_ = database.SaveUserMetadata(repoRoot, username)
+				_ = database.SaveUserMetadata(username)
 
 				fmt.Fprintf(os.Stderr, "[auth] Promoted user %s to admin via CA trust\n", username)
 			}

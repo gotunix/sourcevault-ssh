@@ -36,7 +36,7 @@ func main() {
 		dbDir = "/data"
 	}
 
-	database, err := db.Open(dbDir)
+	database, err := db.Open(dbDir, repoRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Internal error: could not open database: %v\n", err)
 		os.Exit(1)
@@ -56,7 +56,7 @@ func main() {
 			os.Exit(1)
 		}
 		// Sync metadata
-		_ = database.SaveUserMetadata(repoRoot, "system")
+		_ = database.SaveUserMetadata("system")
 	}
 
 	// Launch the admin menu with the system user.
