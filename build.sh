@@ -18,6 +18,7 @@ echo "Building Docker image 'sourcevault-ssh'..."
 
 docker build \
     --build-arg OPENSSH_VERSION="$OPENSSH_VERSION" \
+    --no-cache-filter openssh-builder \
     -t sourcevault-ssh \
     "$@" \
     .
