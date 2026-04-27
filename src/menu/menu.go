@@ -581,7 +581,7 @@ func listKeys(database *db.DB, reader *bufio.Reader) {
 		}
 		fmt.Printf("  [%d]  %s\n       %s  %s (Expires: %s)\n", i+1, k.Fingerprint, k.KeyType, comment, expires)
 	}
-	}
+}
 
 
 // addGPGKey adds a GPG key for any user (admin only).
@@ -711,13 +711,9 @@ func listGPGKeys(database *db.DB, reader *bufio.Reader) {
 		if comment == "" {
 			comment = "(no comment)"
 		}
-		expires := "Never"
-		if k.ExpiresAt != "" {
-			expires = k.ExpiresAt
-		}
-		fmt.Printf("  [%d]  %s\n       %s  %s (Expires: %s)\n", i+1, k.Fingerprint, k.KeyType, comment, expires)
+		fmt.Printf("  [%d]  %s\n       %s\n", i+1, k.Fingerprint, comment)
 	}
-	}
+}
 
 
 // ---------------------------------------------------------------------------
@@ -905,13 +901,9 @@ func listGPGKeysForUserID(database *db.DB, userID int64, username string) {
 		if comment == "" {
 			comment = "(no comment)"
 		}
-		expires := "Never"
-		if k.ExpiresAt != "" {
-			expires = k.ExpiresAt
-		}
-		fmt.Printf("  [%d]  %s\n       %s  %s (Expires: %s)\n", i+1, k.Fingerprint, k.KeyType, comment, expires)
+		fmt.Printf("  [%d]  %s\n       %s\n", i+1, k.Fingerprint, comment)
 	}
-	}
+}
 
 
 func addGPGKeyForUser(database *db.DB, reader *bufio.Reader, user *db.User) {
