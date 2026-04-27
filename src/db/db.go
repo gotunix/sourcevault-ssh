@@ -72,6 +72,7 @@ type SSHKey struct {
 	KeyType     string // e.g. ssh-ed25519
 	KeyData     string // base64 key blob
 	Comment     string // optional label
+	ExpiresAt   string // NULL or datetime string
 	CreatedAt   string
 }
 
@@ -256,6 +257,12 @@ func (d *DB) migrate() error {
 			role        TEXT    NOT NULL DEFAULT 'read',
 			PRIMARY KEY (repo_id, user_id)
 		);
+
+		CREATE TABLE IF NOT EXISTS ssh_key_history (
+			fingerprint TEXT PRIMARY KEY,
+			user_id     INTEGER NOT NULL,
+			used_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+		);
 	`)
 
 	// Inject UUID dynamically into legacy SQLite stores safely
@@ -265,6 +272,9 @@ func (d *DB) migrate() error {
 	// Inject admin password columns dynamically into legacy SQLite stores
 	d.conn.Exec(`ALTER TABLE users ADD COLUMN admin_password_hash TEXT NOT NULL DEFAULT ''`)
 	d.conn.Exec(`ALTER TABLE users ADD COLUMN admin_password_set INTEGER NOT NULL DEFAULT 0`)
+
+	// Add expiration column to ssh_keys
+	d.conn.Exec(`ALTER TABLE ssh_keys ADD COLUMN expires_at TEXT`)
 
 	return err
 }
@@ -372,6 +382,31 @@ func (d *DB) ListUsers() ([]User, error) {
 // DeleteUser removes a user and all their associated SSH keys (CASCADE).
 func (d *DB) DeleteUser(username string) error {
 	_, err := d.conn.Exec(`DELETE FROM users WHERE username = ?`, username)
+	return err
+}
+
+// ListKeyHistoryForUser returns all fingerprints ever used by a user.
+func (d *DB) ListKeyHistoryForUser(userID int64) ([]string, error) {
+	rows, err := d.conn.Query(`SELECT fingerprint FROM ssh_key_history WHERE user_id = ? ORDER BY used_at`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var fingerprints []string
+	for rows.Next() {
+		var f string
+		if err := rows.Scan(&f); err != nil {
+			return nil, err
+		}
+		fingerprints = append(fingerprints, f)
+	}
+	return fingerprints, nil
+}
+
+// RestoreKeyHistory adds a fingerprint to the history table for a specific user.
+func (d *DB) RestoreKeyHistory(fingerprint string, userID int64) error {
+	_, err := d.conn.Exec(`INSERT OR IGNORE INTO ssh_key_history (fingerprint, user_id) VALUES (?, ?)`, fingerprint, userID)
 	return err
 }
 
@@ -490,11 +525,25 @@ func ParsePublicKeyLine(line string) (keyType, keyData, comment string, err erro
 }
 
 // AddKey registers a new public key for a user. Returns an error if the
-// fingerprint is already registered (keys are globally unique).
-func (d *DB) AddKey(userID int64, fingerprint, keyType, keyData, comment string) (*SSHKey, error) {
+// fingerprint is already registered or has been used in the past.
+func (d *DB) AddKey(userID int64, fingerprint, keyType, keyData, comment, expiresAt string) (*SSHKey, error) {
+	// 1. Check history
+	var exists int
+	d.conn.QueryRow(`SELECT COUNT(*) FROM ssh_key_history WHERE fingerprint = ?`, fingerprint).Scan(&exists)
+	if exists > 0 {
+		return nil, fmt.Errorf("this SSH key has been used previously and cannot be reused")
+	}
+
+	// expiresAt can be "" for no expiration.
+	var expires sql.NullString
+	if expiresAt != "" {
+		expires.String = expiresAt
+		expires.Valid = true
+	}
+
 	res, err := d.conn.Exec(
-		`INSERT INTO ssh_keys (user_id, fingerprint, key_type, key_data, comment) VALUES (?, ?, ?, ?, ?)`,
-		userID, fingerprint, keyType, keyData, comment,
+		`INSERT INTO ssh_keys (user_id, fingerprint, key_type, key_data, comment, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		userID, fingerprint, keyType, keyData, comment, expires,
 	)
 	if err != nil {
 		return nil, err
@@ -503,6 +552,7 @@ func (d *DB) AddKey(userID int64, fingerprint, keyType, keyData, comment string)
 	return &SSHKey{
 		ID: id, UserID: userID, Fingerprint: fingerprint,
 		KeyType: keyType, KeyData: keyData, Comment: comment,
+		ExpiresAt: expiresAt,
 	}, nil
 }
 
@@ -510,13 +560,14 @@ func (d *DB) AddKey(userID int64, fingerprint, keyType, keyData, comment string)
 // Returns nil (not an error) if the fingerprint is not registered.
 func (d *DB) LookupKeyByFingerprint(fingerprint string) (*SSHKey, error) {
 	var k SSHKey
+	var expires sql.NullString
 	err := d.conn.QueryRow(`
-		SELECT k.id, k.user_id, u.username, k.fingerprint, k.key_type, k.key_data, k.comment, k.created_at
+		SELECT k.id, k.user_id, u.username, k.fingerprint, k.key_type, k.key_data, k.comment, k.expires_at, k.created_at
 		FROM ssh_keys k JOIN users u ON k.user_id = u.id
 		WHERE k.fingerprint = ?
 	`, fingerprint).Scan(
 		&k.ID, &k.UserID, &k.Username, &k.Fingerprint,
-		&k.KeyType, &k.KeyData, &k.Comment, &k.CreatedAt,
+		&k.KeyType, &k.KeyData, &k.Comment, &expires, &k.CreatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -524,13 +575,16 @@ func (d *DB) LookupKeyByFingerprint(fingerprint string) (*SSHKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	if expires.Valid {
+		k.ExpiresAt = expires.String
+	}
 	return &k, nil
 }
 
 // ListKeysForUser returns all SSH keys registered to a specific user.
 func (d *DB) ListKeysForUser(userID int64) ([]SSHKey, error) {
 	rows, err := d.conn.Query(`
-		SELECT id, user_id, fingerprint, key_type, key_data, comment, created_at
+		SELECT id, user_id, fingerprint, key_type, key_data, comment, expires_at, created_at
 		FROM ssh_keys WHERE user_id = ? ORDER BY created_at
 	`, userID)
 	if err != nil {
@@ -541,18 +595,48 @@ func (d *DB) ListKeysForUser(userID int64) ([]SSHKey, error) {
 	var keys []SSHKey
 	for rows.Next() {
 		var k SSHKey
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Fingerprint, &k.KeyType, &k.KeyData, &k.Comment, &k.CreatedAt); err != nil {
+		var expires sql.NullString
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Fingerprint, &k.KeyType, &k.KeyData, &k.Comment, &expires, &k.CreatedAt); err != nil {
 			return nil, err
+		}
+		if expires.Valid {
+			k.ExpiresAt = expires.String
 		}
 		keys = append(keys, k)
 	}
 	return keys, nil
 }
 
-// RemoveKeyByFingerprint deletes a key by its fingerprint.
+// RemoveKeyByFingerprint deletes a key by its fingerprint and records it in history.
 func (d *DB) RemoveKeyByFingerprint(fingerprint string) error {
-	_, err := d.conn.Exec(`DELETE FROM ssh_keys WHERE fingerprint = ?`, fingerprint)
-	return err
+	// Get the userID before deleting
+	var userID int64
+	err := d.conn.QueryRow(`SELECT user_id FROM ssh_keys WHERE fingerprint = ?`, fingerprint).Scan(&userID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil // Key already gone
+		}
+		return err
+	}
+
+	// Start a transaction to ensure atomic removal and history recording
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`DELETE FROM ssh_keys WHERE fingerprint = ?`, fingerprint)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(`INSERT OR IGNORE INTO ssh_key_history (fingerprint, user_id) VALUES (?, ?)`, fingerprint, userID)
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // ---------------------------------------------------------------------------

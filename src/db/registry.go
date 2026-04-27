@@ -52,7 +52,29 @@ func (d *DB) EnsureRegistry() (string, error) {
 		}
 	}
 
+	// 3. Deploy post-receive hook to the BARE repo
+	if err := d.deployRegistryHook(registryBarePath); err != nil {
+		return "", fmt.Errorf("deploying registry hook: %w", err)
+	}
+
 	return registryLocalPath, nil
+}
+
+func (d *DB) deployRegistryHook(barePath string) error {
+	hookPath := filepath.Join(barePath, "hooks", "post-receive")
+	if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
+		return err
+	}
+
+	// The hook calls --sync to update the SQLite database from the pushed YAMLs.
+	// We use the full path to the binary.
+	content := `#!/usr/bin/env bash
+# SourceVault Registry Sync Hook
+# Automatically updates the SQLite database when changes are pushed to the registry.
+echo "[registry] Triggering database synchronization..."
+/usr/local/bin/git-shell --sync
+`
+	return os.WriteFile(hookPath, []byte(content), 0o755)
 }
 
 func (d *DB) pullRegistry(localPath string) error {

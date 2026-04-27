@@ -73,6 +73,10 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.SetOutput(os.Stderr)
 
+	// Attempt to load environment from .sv-env if it exists.
+	// This ensures consistency when spawned by sshd or git hooks.
+	loadEnv("/data/.sv-env")
+
 	// Resolve the repo root — where bare git repositories are stored (NFS volume).
 	repoRoot := os.Getenv("GIT_SHELL_REPO_ROOT")
 	if repoRoot == "" {
@@ -308,7 +312,7 @@ func maybeBootstrap(database *db.DB, adminUser, repoRoot string) error {
 	}
 	log.Printf("[bootstrap] created user %q with id=%d", adminUser, user.ID)
 
-	if _, err := database.AddKey(user.ID, fingerprint, keyType, keyData, comment); err != nil {
+	if _, err := database.AddKey(user.ID, fingerprint, keyType, keyData, comment, ""); err != nil {
 		return fmt.Errorf("registering bootstrap admin key: %w", err)
 	}
 
@@ -362,4 +366,33 @@ func maybeBootstrapCA(database *db.DB) error {
 
 	log.Printf("[bootstrap] SUCCESS — CA %q is now trusted: %s", caName, fingerprint)
 	return nil
+}
+
+// loadEnv reads key=value pairs from a file and sets them in the process environment.
+// It does not overwrite existing environment variables.
+func loadEnv(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // Silently ignore if file doesn't exist
+	}
+
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+
+		if os.Getenv(key) == "" {
+			os.Setenv(key, val)
+		}
+	}
 }

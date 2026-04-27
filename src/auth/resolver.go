@@ -51,6 +51,7 @@ package auth
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/gotunix/sourcevault-ssh/db"
 )
@@ -76,6 +77,24 @@ func Resolve(database *db.DB, fingerprint string) {
 	}
 
 	fmt.Fprintf(os.Stderr, "[key-resolver] key found: fingerprint=%s user=%s\n", fingerprint, key.Username)
+
+	// Check if the key has an artificial expiration date set.
+	if key.ExpiresAt != "" {
+		expires, err := time.Parse("2006-01-02 15:04:05", key.ExpiresAt)
+		if err != nil {
+			// Fallback to date-only if needed, but we should aim for standard SQLite format.
+			expires, err = time.Parse("2006-01-02", key.ExpiresAt)
+		}
+
+		if err == nil {
+			if time.Now().After(expires) {
+				fmt.Fprintf(os.Stderr, "[key-resolver] DENIED: key expired on %s\n", key.ExpiresAt)
+				os.Exit(0)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[key-resolver] WARNING: could not parse expiration date %q: %v\n", key.ExpiresAt, err)
+		}
+	}
 
 	// Fetch the user record to determine admin status.
 	user, err := database.GetUserByUsername(key.Username)

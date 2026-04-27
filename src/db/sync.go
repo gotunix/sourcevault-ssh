@@ -26,13 +26,14 @@ import (
 
 // UserMetadata represents the "Git First" source of truth mapped sequentially onto the system
 type UserMetadata struct {
-	ID                int64  `yaml:"id"`
-	UUID              string `yaml:"uuid"`
-	Username          string `yaml:"username"`
-	IsAdmin           bool   `yaml:"is_admin"`
-	AdminPasswordHash string `yaml:"admin_password_hash"`
-	AdminPasswordSet  bool   `yaml:"admin_password_set"`
-	CreatedAt         string `yaml:"created_at"`
+	ID                int64    `yaml:"id"`
+	UUID              string   `yaml:"uuid"`
+	Username          string   `yaml:"username"`
+	IsAdmin           bool     `yaml:"is_admin"`
+	AdminPasswordHash string   `yaml:"admin_password_hash"`
+	AdminPasswordSet  bool     `yaml:"admin_password_set"`
+	KeyHistory        []string `yaml:"key_history"` // list of fingerprints
+	CreatedAt         string   `yaml:"created_at"`
 }
 
 // OrgMetadata represents the "Git First" source of truth stored in the registry.
@@ -61,6 +62,11 @@ func (d *DB) SaveUserMetadata(username string) error {
 		return fmt.Errorf("user %q not found", username)
 	}
 
+	history, err := d.ListKeyHistoryForUser(user.ID)
+	if err != nil {
+		history = []string{}
+	}
+
 	metadata := UserMetadata{
 		ID:                user.ID,
 		UUID:              user.UUID,
@@ -68,6 +74,7 @@ func (d *DB) SaveUserMetadata(username string) error {
 		IsAdmin:           user.IsAdmin,
 		AdminPasswordHash: user.AdminPasswordHash,
 		AdminPasswordSet:  user.AdminPasswordSet,
+		KeyHistory:        history,
 		CreatedAt:         user.CreatedAt,
 	}
 
@@ -236,7 +243,7 @@ func (d *DB) syncUsers(usersDir string) error {
 		}
 		if user == nil {
 			log.Printf("[sync] Re-creating user: %s", metadata.Username)
-			_, err = d.RestoreUser(metadata.ID, metadata.UUID, metadata.Username, metadata.IsAdmin, metadata.AdminPasswordHash, metadata.AdminPasswordSet, metadata.CreatedAt)
+			user, err = d.RestoreUser(metadata.ID, metadata.UUID, metadata.Username, metadata.IsAdmin, metadata.AdminPasswordHash, metadata.AdminPasswordSet, metadata.CreatedAt)
 			if err != nil {
 				return err
 			}
@@ -246,6 +253,11 @@ func (d *DB) syncUsers(usersDir string) error {
 				adminVal = 1
 			}
 			d.conn.Exec(`UPDATE users SET is_admin = ? WHERE id = ?`, adminVal, metadata.ID)
+		}
+
+		// Restore key history
+		for _, fp := range metadata.KeyHistory {
+			_ = d.RestoreKeyHistory(fp, user.ID)
 		}
 	}
 	return nil

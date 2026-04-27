@@ -498,12 +498,14 @@ func addKey(database *db.DB, reader *bufio.Reader) {
 		return
 	}
 
-	if _, err := database.AddKey(user.ID, fingerprint, keyType, keyData, comment); err != nil {
+	expiresAt := prompt(reader, "Expiration (YYYY-MM-DD or empty for Never): ")
+
+	if _, err := database.AddKey(user.ID, fingerprint, keyType, keyData, comment, expiresAt); err != nil {
 		fmt.Printf("[ERROR] Could not add key (already registered?): %v\n", err)
 		return
 	}
 
-	fmt.Printf("[OK] Key added for %q\n  Fingerprint: %s\n  Comment: %s\n", username, fingerprint, comment)
+	fmt.Printf("[OK] Key added for %q\n  Fingerprint: %s\n  Comment: %s\n  Expires: %s\n", username, fingerprint, comment, expiresAt)
 }
 
 // removeKey removes an SSH key by its SHA256 fingerprint (admin only).
@@ -568,14 +570,19 @@ func listKeys(database *db.DB, reader *bufio.Reader) {
 	}
 
 	fmt.Printf("\n  Keys for %q:\n", username)
-	for _, k := range keys {
+	for i, k := range keys {
 		comment := k.Comment
 		if comment == "" {
 			comment = "(no comment)"
 		}
-		fmt.Printf("  %-50s  %s  %s\n", k.Fingerprint, k.KeyType, comment)
+		expires := "Never"
+		if k.ExpiresAt != "" {
+			expires = k.ExpiresAt
+		}
+		fmt.Printf("  [%d]  %s\n       %s  %s (Expires: %s)\n", i+1, k.Fingerprint, k.KeyType, comment, expires)
 	}
-}
+	}
+
 
 // addGPGKey adds a GPG key for any user (admin only).
 func addGPGKey(database *db.DB, reader *bufio.Reader) {
@@ -704,9 +711,14 @@ func listGPGKeys(database *db.DB, reader *bufio.Reader) {
 		if comment == "" {
 			comment = "(no comment)"
 		}
-		fmt.Printf("  [%d]  %s\n       %s\n", i+1, k.Fingerprint, comment)
+		expires := "Never"
+		if k.ExpiresAt != "" {
+			expires = k.ExpiresAt
+		}
+		fmt.Printf("  [%d]  %s\n       %s  %s (Expires: %s)\n", i+1, k.Fingerprint, k.KeyType, comment, expires)
 	}
-}
+	}
+
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -792,7 +804,11 @@ func listKeysForUserID(database *db.DB, userID int64, username string) {
 		if comment == "" {
 			comment = "(no comment)"
 		}
-		fmt.Printf("  [%d]  %s\n       %s  %s\n", i+1, k.Fingerprint, k.KeyType, comment)
+		expires := "Never"
+		if k.ExpiresAt != "" {
+			expires = k.ExpiresAt
+		}
+		fmt.Printf("  [%d]  %s\n       %s  %s (Expires: %s)\n", i+1, k.Fingerprint, k.KeyType, comment, expires)
 	}
 }
 
@@ -819,12 +835,15 @@ func addKeyForUser(database *db.DB, reader *bufio.Reader, user *db.User) {
 		return
 	}
 
-	if _, err := database.AddKey(user.ID, fingerprint, keyType, keyData, comment); err != nil {
+	fmt.Print("  Expiration (YYYY-MM-DD or empty for Never): ")
+	expiresAt := readLine(reader)
+
+	if _, err := database.AddKey(user.ID, fingerprint, keyType, keyData, comment, expiresAt); err != nil {
 		fmt.Printf("  [ERROR] Could not add key (already registered?): %v\n", err)
 		return
 	}
 
-	fmt.Printf("  [OK] Key added.\n  Fingerprint: %s\n  Comment:     %s\n", fingerprint, comment)
+	fmt.Printf("  [OK] Key added.\n  Fingerprint: %s\n  Comment:     %s\n  Expires:     %s\n", fingerprint, comment, expiresAt)
 }
 
 // removeKeyForUser lets a user delete one of their own SSH keys by fingerprint.
@@ -886,9 +905,14 @@ func listGPGKeysForUserID(database *db.DB, userID int64, username string) {
 		if comment == "" {
 			comment = "(no comment)"
 		}
-		fmt.Printf("  [%d]  %s\n       %s\n", i+1, k.Fingerprint, comment)
+		expires := "Never"
+		if k.ExpiresAt != "" {
+			expires = k.ExpiresAt
+		}
+		fmt.Printf("  [%d]  %s\n       %s  %s (Expires: %s)\n", i+1, k.Fingerprint, k.KeyType, comment, expires)
 	}
-}
+	}
+
 
 func addGPGKeyForUser(database *db.DB, reader *bufio.Reader, user *db.User) {
 	fmt.Println("  Paste your ASCII armored GPG public key block:")
