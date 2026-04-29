@@ -21,6 +21,8 @@ services:
       args:
         PUID: ${PUID:-401}
         PGID: ${PGID:-401}
+    depends_on:
+      - tailscale-sourcevault_ssh
     image: sourcevault_ssh:latest
     network_mode: service:tailscale-sourcevault_ssh
     environment:
