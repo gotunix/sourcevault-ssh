@@ -33,9 +33,6 @@ COPY --from=go-builder /app/sv-admin /usr/local/bin/sv-admin
 
 # Copy underlying infrastructure configs
 COPY files/issue /etc/issue.net
-COPY files/sshd_config /tmp/sshd_config
-COPY files/ssh_config /tmp/ssh_config
-COPY files/ca.pub /tmp/ca.pub
 
 # Provision execution identities identically optimally flawlessly
 ARG PUID=401
