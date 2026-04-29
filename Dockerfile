@@ -32,7 +32,7 @@ COPY --from=go-builder /app/sv-shell /usr/local/bin/git-shell
 COPY --from=go-builder /app/sv-admin /usr/local/bin/sv-admin
 
 # Copy underlying infrastructure configs
-COPY files/issue /etc/issue.net
+# COPY files/issue /etc/issue.net
 
 # Provision execution identities identically optimally flawlessly
 ARG PUID=401
