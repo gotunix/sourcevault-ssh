@@ -78,10 +78,12 @@ func ResolveFromAuthInfo(authInfoPath string, database *db.DB, repoRoot string) 
 		}
 
 		// 3. Extract identity.
-		// By default we use KeyId. If the user wants to use principals, we'd need more logic.
 		username := cert.KeyId
+		if username == "" && len(cert.ValidPrincipals) > 0 {
+			username = cert.ValidPrincipals[0]
+		}
 		if username == "" {
-			return "", false, fmt.Errorf("certificate has empty KeyId")
+			return "", false, fmt.Errorf("certificate has empty KeyId and no valid principals")
 		}
 
 		// 4. Determine admin status.

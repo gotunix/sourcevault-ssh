@@ -75,7 +75,11 @@ func main() {
 
 	// Attempt to load environment from .sv-env if it exists.
 	// This ensures consistency when spawned by sshd or git hooks.
-	loadEnv("/data/.sv-env")
+	dbDirEnv := os.Getenv("SOURCEVAULT_DB_DIR")
+	if dbDirEnv == "" {
+		dbDirEnv = "/data"
+	}
+	loadEnv(fmt.Sprintf("%s/.sv-env", strings.TrimRight(dbDirEnv, "/")))
 
 	// Resolve the repo root — where bare git repositories are stored (NFS volume).
 	repoRoot := os.Getenv("GIT_SHELL_REPO_ROOT")

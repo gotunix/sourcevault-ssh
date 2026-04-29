@@ -51,6 +51,7 @@ import (
 	"unicode"
 
 	"github.com/gotunix/sourcevault-ssh/db"
+	"golang.org/x/crypto/ssh"
 )
 
 // allowedBinaries is the strict whitelist of git wire-protocol executables.
@@ -204,6 +205,13 @@ func Proxy(database *db.DB, repoRoot, gitUser string, isAdmin bool, origCmd stri
 	finalCmd := fmt.Sprintf("%s '%s'", executable, absoluteRepoPath)
 	log.Printf("Access granted for user %q — dispatching: %s", gitUser, finalCmd)
 
+	// Check if we should proxy to an upstream SSH server
+	upstreamAddr := os.Getenv("UPSTREAM_SSH_ADDR")
+	if upstreamAddr != "" {
+		UpstreamProxy(gitUser, upstreamAddr, finalCmd)
+		return
+	}
+
 	// Replace this process with git-shell (syscall.Exec, not exec.Command).
 	// Using process replacement means git-shell inherits our PID, file descriptors,
 	// and signal handlers cleanly — essential for correct git wire protocol operation.
@@ -216,4 +224,103 @@ func Proxy(database *db.DB, repoRoot, gitUser string, isAdmin bool, origCmd stri
 		fmt.Fprintf(os.Stderr, "Internal error: could not exec git-shell\n")
 		os.Exit(1)
 	}
+}
+
+// UpstreamProxy dials an upstream SSH server and forwards the git command.
+func UpstreamProxy(gitUser, upstreamAddr, cmd string) {
+	upstreamUser := os.Getenv("UPSTREAM_SSH_USER")
+	if upstreamUser == "" {
+		upstreamUser = "git"
+	}
+
+	keyPath := os.Getenv("UPSTREAM_SSH_KEY_PATH")
+	certPath := os.Getenv("UPSTREAM_SSH_CERT_PATH")
+
+	var signer ssh.Signer
+	if keyPath != "" {
+		keyBytes, err := os.ReadFile(keyPath)
+		if err != nil {
+			log.Printf("Failed to read upstream key %q: %v", keyPath, err)
+			fmt.Fprintf(os.Stderr, "Internal error: could not read upstream key\n")
+			os.Exit(1)
+		}
+		signer, err = ssh.ParsePrivateKey(keyBytes)
+		if err != nil {
+			log.Printf("Failed to parse upstream key %q: %v", keyPath, err)
+			fmt.Fprintf(os.Stderr, "Internal error: could not parse upstream key\n")
+			os.Exit(1)
+		}
+	} else {
+		log.Printf("UPSTREAM_SSH_ADDR is set but UPSTREAM_SSH_KEY_PATH is not")
+		fmt.Fprintf(os.Stderr, "Internal error: upstream key not configured\n")
+		os.Exit(1)
+	}
+
+	if certPath != "" {
+		certBytes, err := os.ReadFile(certPath)
+		if err != nil {
+			log.Printf("Failed to read upstream cert %q: %v", certPath, err)
+			fmt.Fprintf(os.Stderr, "Internal error: could not read upstream cert\n")
+			os.Exit(1)
+		}
+		pubKey, _, _, _, err := ssh.ParseAuthorizedKey(certBytes)
+		if err != nil {
+			log.Printf("Failed to parse upstream cert %q: %v", certPath, err)
+			fmt.Fprintf(os.Stderr, "Internal error: could not parse upstream cert\n")
+			os.Exit(1)
+		}
+		cert, ok := pubKey.(*ssh.Certificate)
+		if !ok {
+			log.Printf("Upstream cert %q does not contain a certificate", certPath)
+			fmt.Fprintf(os.Stderr, "Internal error: invalid upstream cert\n")
+			os.Exit(1)
+		}
+		signer, err = ssh.NewCertSigner(cert, signer)
+		if err != nil {
+			log.Printf("Failed to create cert signer: %v", err)
+			fmt.Fprintf(os.Stderr, "Internal error: could not create cert signer\n")
+			os.Exit(1)
+		}
+	}
+
+	config := &ssh.ClientConfig{
+		User: upstreamUser,
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+
+	client, err := ssh.Dial("tcp", upstreamAddr, config)
+	if err != nil {
+		log.Printf("Failed to dial upstream %s: %v", upstreamAddr, err)
+		fmt.Fprintf(os.Stderr, "Internal error: could not connect to upstream\n")
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		log.Printf("Failed to create upstream session: %v", err)
+		fmt.Fprintf(os.Stderr, "Internal error: could not create upstream session\n")
+		os.Exit(1)
+	}
+	defer session.Close()
+
+	session.Stdin = os.Stdin
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
+
+	// Inject PROXY_REMOTE_USER
+	injectedCmd := fmt.Sprintf("PROXY_REMOTE_USER=%q %s", gitUser, cmd)
+	log.Printf("Proxying command upstream for user %s: %s", gitUser, injectedCmd)
+
+	if err := session.Run(injectedCmd); err != nil {
+		if exitErr, ok := err.(*ssh.ExitError); ok {
+			os.Exit(exitErr.ExitStatus())
+		}
+		log.Printf("Upstream command failed: %v", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
