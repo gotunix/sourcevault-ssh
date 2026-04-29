@@ -39,10 +39,10 @@ fi
 # ---------------------------------------------------------------------------
 # Install runtime SSH configs from /tmp staging area
 # ---------------------------------------------------------------------------
-rm -f /etc/ssh/ssh_config /etc/ssh/sshd_config /etc/ssh/ca.pub
-mv /tmp/sshd_config /etc/ssh/sshd_config
-mv /tmp/ssh_config  /etc/ssh/ssh_config
-mv /tmp/ca.pub      /etc/ssh/ca.pub
+#rm -f /etc/ssh/ssh_config /etc/ssh/sshd_config /etc/ssh/ca.pub
+#mv /tmp/sshd_config /etc/ssh/sshd_config
+#mv /tmp/ssh_config  /etc/ssh/ssh_config
+#mv /tmp/ca.pub      /etc/ssh/ca.pub
 
 # ---------------------------------------------------------------------------
 # Data directory setup (NFS volume — repos only)
