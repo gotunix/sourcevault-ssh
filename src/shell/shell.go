@@ -334,56 +334,20 @@ func UpstreamProxy(gitUser, upstreamAddr, cmd string) {
 	}
 	defer session.Close()
 
-	stdin, err := session.StdinPipe()
-	if err != nil {
-		log.Printf("Failed to get upstream stdin: %v", err)
-		os.Exit(1)
-	}
-	stdout, err := session.StdoutPipe()
-	if err != nil {
-		log.Printf("Failed to get upstream stdout: %v", err)
-		os.Exit(1)
-	}
-	stderr, err := session.StderrPipe()
-	if err != nil {
-		log.Printf("Failed to get upstream stderr: %v", err)
-		os.Exit(1)
-	}
+	session.Stdin = os.Stdin
+	session.Stdout = os.Stdout
+	session.Stderr = os.Stderr
 
 	// Inject PROXY_REMOTE_USER
 	injectedCmd := fmt.Sprintf("PROXY_REMOTE_USER=%q %s", gitUser, cmd)
 	log.Printf("Proxying command upstream for user %s: %s", gitUser, injectedCmd)
 
-	if err := session.Start(injectedCmd); err != nil {
-		log.Printf("Failed to start upstream command: %v", err)
-		fmt.Fprintf(os.Stderr, "Internal error: could not start upstream command\n")
-		os.Exit(1)
-	}
-
-	// Pump data
-	go func() {
-		_, _ = io.Copy(stdin, os.Stdin)
-		stdin.Close()
-	}()
-
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(os.Stdout, stdout)
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(os.Stderr, stderr)
-		done <- struct{}{}
-	}()
-
-	log.Printf("Waiting for upstream command to finish...")
-	err = session.Wait()
-	log.Printf("Upstream command finished with err: %v", err)
-
+	err = session.Run(injectedCmd)
 	if err != nil {
 		if exitErr, ok := err.(*ssh.ExitError); ok {
 			os.Exit(exitErr.ExitStatus())
 		}
+		log.Printf("Upstream command failed: %v", err)
 		os.Exit(1)
 	}
 	os.Exit(0)
