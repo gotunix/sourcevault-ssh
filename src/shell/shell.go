@@ -146,6 +146,32 @@ func sanitizeCommand(cmdStr string) (executable, repoPath string, err error) {
 //   - isAdmin:  whether the user has admin privileges (bypasses namespace check)
 //   - origCmd:  the raw SSH_ORIGINAL_COMMAND string
 func Proxy(database *db.DB, repoRoot, gitUser string, isAdmin bool, origCmd string) {
+	// Handle proxy identity injection: PROXY_REMOTE_USER="user" git-command...
+	if strings.HasPrefix(origCmd, "PROXY_REMOTE_USER=") {
+		parts := strings.SplitN(origCmd, " ", 2)
+		if len(parts) == 2 {
+			envPart := parts[0]
+			remainingCmd := parts[1]
+
+			// Extract the value: PROXY_REMOTE_USER="value" -> value
+			kv := strings.SplitN(envPart, "=", 2)
+			if len(kv) == 2 {
+				remoteUser := strings.Trim(kv[1], "\"")
+				if remoteUser != "" {
+					log.Printf("Proxy identity detected: %s (replacing %s)", remoteUser, gitUser)
+					gitUser = remoteUser
+					// We might want to re-evaluate isAdmin here based on the new gitUser,
+					// but for now we'll stick to the user's base identity or trust the proxy.
+					user, err := database.GetUserByUsername(gitUser)
+					if err == nil && user != nil {
+						isAdmin = user.IsAdmin
+					}
+				}
+			}
+			origCmd = remainingCmd
+		}
+	}
+
 	executable, repoPath, err := sanitizeCommand(origCmd)
 	if err != nil {
 		log.Printf("Command rejected for user %q: %v", gitUser, err)
